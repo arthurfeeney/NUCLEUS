@@ -13,7 +13,7 @@ from bubbleformer.models import get_model
 from bubbleformer.utils.losses import LpLoss
 from bubbleformer.utils.lr_schedulers import CosineWarmupLR
 from bubbleformer.utils.plot_utils import wandb_sdf_plotter, wandb_temp_plotter, wandb_vel_plotter
-
+import time
 
 class ForecastModule(L.LightningModule):
     def __init__(
@@ -41,6 +41,9 @@ class ForecastModule(L.LightningModule):
         self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
         self.T_max = None
         self.validation_sample = None
+        self.train_start_time = None
+        self.val_start_time = None  
+        # print(self.model)
     
     def setup(
         self,
@@ -149,8 +152,26 @@ class ForecastModule(L.LightningModule):
                 "frequency": 1
             }
         }
-
+    
+    def on_train_epoch_start(self):
+        self.train_start_time = time.time()  
+        
+    def on_train_epoch_end(self):
+        train_time = time.time() - self.train_start_time  
+        if self.log_wandb:
+            wandb.log({"train_epoch_time": train_time, "epoch": self.current_epoch})  
+        
+    def on_validation_epoch_start(self):
+        self.val_start_time = time.time()  
+        if self.log_wandb:
+            train_loss = self.trainer.callback_metrics["train_loss"].item()
+            wandb.log({"train_loss_epoch": train_loss, "epoch": self.current_epoch})
+                
     def on_validation_epoch_end(self):
+        val_time = time.time() - self.val_start_time  
+        if self.log_wandb:
+            wandb.log({"val_epoch_time": val_time, "epoch": self.current_epoch})  
+            
         fields = self.data_cfg["fields"]
         if self.validation_sample is None:
             return
@@ -220,3 +241,8 @@ class ForecastModule(L.LightningModule):
 
         plt.close("all")
         self.validation_outputs = []
+        
+        if self.log_wandb:
+            val_loss = self.trainer.callback_metrics["val_loss"].item()
+            wandb.log({"val_loss_epoch": val_loss, "epoch": self.current_epoch})
+                
