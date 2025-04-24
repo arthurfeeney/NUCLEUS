@@ -5,3 +5,5 @@ params:
   processor_blocks: 12
   num_heads: 12
   drop_path: 0.2
+  attn_scale: True
+  feat_scale: True

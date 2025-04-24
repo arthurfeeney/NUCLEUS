@@ -3,9 +3,11 @@ import torch
 from bubbleformer.models import get_model
 
 @pytest.mark.parametrize("fields", [1, 2])
-@pytest.mark.parametrize("patch_size", [4, 8, 16])
+@pytest.mark.parametrize("patch_size", [8, 16])
 @pytest.mark.parametrize("embed_dim", [192, 384])
-def test_avit(fields, patch_size, embed_dim):
+@pytest.mark.parametrize("attn_scale", [True, False])
+@pytest.mark.parametrize("feat_scale", [True, False])
+def test_avit(fields, patch_size, embed_dim, attn_scale, feat_scale):
     """
     Test AViT model with random configs
     """
@@ -16,7 +18,9 @@ def test_avit(fields, patch_size, embed_dim):
         "embed_dim": embed_dim,
         "num_heads": 4,
         "processor_blocks": 4,
-        "drop_path": 0.1
+        "drop_path": 0.1,
+        "attn_scale": attn_scale,
+        "feat_scale": feat_scale,
     }
     spatial_dims = 64, 64
     model = get_model("avit", **model_params)

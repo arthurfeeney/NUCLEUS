@@ -1,20 +1,20 @@
 log_dir: /pub/sheikhh1/bubbleformer_logs
 seed: 42
 
-distributed: True
+distributed: False
 nodes:
 devices:
 
 max_epochs:
-batch_size: 2
+batch_size: 4
 
 checkpoint_path:
 
 use_wandb: True
 wandb_tags:
-  - time_window-10
+  - time_window-5
   - relative_l2_loss
-  - AViT-Defaultt
+  - AViT-Default
   - PB-Subcooled
 defaults:
   - _self_
