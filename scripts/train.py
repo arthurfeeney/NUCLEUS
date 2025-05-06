@@ -12,9 +12,15 @@ from lightning import seed_everything, Trainer
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelSummary, Callback
 from lightning.pytorch.plugins.environments import SLURMEnvironment
+from lightning.pytorch.strategies import FSDPStrategy
+# from lightning.pytorch.profilers import PyTorchProfiler
 
 from bubbleformer.data import BubblemlForecast
 from bubbleformer.modules import ForecastModule
+from bubbleformer.models.axial_vit import SpaceTimeBlock
+
+def checkpoint_policy(module, **kwargs):
+    return isinstance(module, SpaceTimeBlock)
 
 def is_leader_process():
     """
@@ -68,7 +74,6 @@ def main(cfg: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
 
     params = {}
-    params["distributed"] = cfg.distributed
     params["nodes"] = cfg.nodes
     params["devices"] = cfg.devices
     params["checkpoint_path"] = cfg.checkpoint_path
@@ -96,20 +101,24 @@ def main(cfg: DictConfig) -> None:
 
     train_dataset = BubblemlForecast(
                 filenames=cfg.data_cfg.train_paths,
-                fields=cfg.data_cfg.fields,
+                input_fields=cfg.data_cfg.input_fields,
+                output_fields=cfg.data_cfg.output_fields,
                 norm=cfg.data_cfg.normalize,
+                downsample_factor=cfg.data_cfg.downsample_factor,
                 time_window=cfg.data_cfg.time_window,
             )
     normalization_constants = train_dataset.normalize()
     val_dataset = BubblemlForecast(
                 filenames=cfg.data_cfg.val_paths,
-                fields=cfg.data_cfg.fields,
+                input_fields=cfg.data_cfg.input_fields,
+                output_fields=cfg.data_cfg.output_fields,
                 norm=cfg.data_cfg.normalize,
+                downsample_factor=cfg.data_cfg.downsample_factor,
                 time_window=cfg.data_cfg.time_window,
             )
     val_dataset.normalize(*normalization_constants)
-    diff_term = normalization_constants[0].tolist()
-    div_term = normalization_constants[1].tolist()
+    diff_term = normalization_constants[0]
+    div_term = normalization_constants[1]
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -134,6 +143,28 @@ def main(cfg: DictConfig) -> None:
                 log_wandb=cfg.use_wandb,
                 normalization_constants=(diff_term, div_term),
             )
+    # fsdp_strategy = FSDPStrategy(
+    #     activation_checkpointing_policy={SpaceTimeBlock},
+    #     sharding_strategy="SHARD_GRAD_OP",
+    #     state_dict_type="full",
+    #     limit_all_gathers=True,
+    # )
+
+    # profiler = PyTorchProfiler(
+    #     dirpath=params["log_dir"],
+    #     filename="fsdp_trace",
+    #     export_to_chrome=True,
+    #     profile_memory=True,
+    #     record_shapes=True,
+    #     with_stack=True,
+    #     schedule=torch.profiler.schedule(
+    #         wait=1,
+    #         warmup=1,
+    #         active=3,
+    #         repeat=0,
+    #     ),
+    #     on_trace_ready=torch.profiler.tensorboard_trace_handler(params["log_dir"]),
+    # )
 
     trainer = Trainer(
         accelerator="gpu",
@@ -145,7 +176,8 @@ def main(cfg: DictConfig) -> None:
         default_root_dir=params["log_dir"],
         plugins=[SLURMEnvironment(requeue_signal=signal.SIGHUP)],
         enable_model_summary=True,
-        limit_train_batches=500,
+        # profiler=profiler,
+        # limit_train_batches=500,
         limit_val_batches=50,
         num_sanity_val_steps=0,
         callbacks=[ModelSummary(max_depth=-1), PreemptionCheckpointCallback(preempt_ckpt_path)]

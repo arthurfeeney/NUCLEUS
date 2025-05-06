@@ -4,13 +4,13 @@ Classes:
     BubbleMLForecast: Dataset class for BubbleML dataset
 Author: Sheikh Md Shakeel Hassan
 """
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 import numpy as np
 import h5py as h5
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
-
 
 class BubblemlForecast(Dataset):
     """
@@ -19,32 +19,40 @@ class BubblemlForecast(Dataset):
     def __init__(
         self,
         filenames: List[str],
-        fields: Optional[List[str]] = None,
+        input_fields: Optional[List[str]] = None,
+        output_fields: Optional[List[str]] = None,
         norm: str = "none",
+        downsample_factor: int = 1,
         time_window: int = 16,
         start_time: int = 50,
     ):
         super().__init__()
         self.filenames = filenames
-        self.fields = fields if fields is not None else ["dfun", "temperature", "velx", "vely"]
+        if input_fields is not None:
+            self.input_fields = input_fields
+        else:
+            self.input_fields = ["dfun", "temperature", "velx", "vely"]
+        if output_fields is not None:
+            self.output_fields = output_fields
+        else:
+            self.output_fields = ["dfun", "temperature", "velx", "vely"]
         self.norm = norm
+        self.downsample_factor = downsample_factor
         self.time_window = time_window
         self.start_time = start_time
         self.data = [h5.File(filename, "r") for filename in filenames]
         self.num_trajs = []
         self.traj_lens = []
 
-        self.max_temps = [self.heater_temp(filename) for filename in filenames]
-        self.min_temps = [
-            58 if "saturated" in filename.lower() else 50 for filename in filenames
-        ]
         for h5_file in self.data:
             self.num_trajs.append(1)
-            self.traj_lens.append(h5_file[fields[0]].shape[0])
+            self.traj_lens.append(h5_file[self.input_fields[0]].shape[0])
 
-        self.num_fields = len(self.fields)
-        self.diff_term = torch.zeros(self.num_fields)
-        self.div_term = torch.ones(self.num_fields)
+        self.input_num_fields = len(self.input_fields)
+        self.output_num_fields = len(self.output_fields)
+        self.fields = list(set(self.input_fields + self.output_fields))
+        self.diff_terms = {k:[] for k in self.fields}
+        self.div_terms = {k:[] for k in self.fields}
 
     def __len__(self):
         total_len = 0
@@ -54,73 +62,47 @@ class BubblemlForecast(Dataset):
 
     def normalize(
             self,
-            diff_term: Optional[torch.tensor] = None,
-            div_term: Optional[torch.tensor] = None,
+            diff_terms: Optional[Dict] = None,
+            div_terms: Optional[Dict] = None,
         ) -> Tuple[torch.tensor, torch.tensor]:
         """
-        Calculate channel-wise normalization constants and store in a tensor of shape (C,)
+        Calculate channel-wise normalization constants and store in a Dictionary
         Open each File object in self.data['files'] and calculate the channelwise
         mean and std of the data
         """
-        diff_terms = []
-        div_terms = []
-        if diff_term is None and div_term is None:
-            for i, h5_file in enumerate(self.data):
-                assert all([f in h5_file.keys() for f in self.fields]), "Invalid fields"
-                data_fields = {}
-                for field in self.fields:
-                    if field == "temperature":
-                        max_temp_diff = self.max_temps[i] - self.min_temps[i]
-                        data_fields[field] = h5_file[field][...] * max_temp_diff + self.min_temps[i]
+        if diff_terms is None and div_terms is None:
+            diff_terms = {k:[] for k in self.fields}
+            div_terms = {k:[] for k in self.fields}
+            for field in self.fields:
+                for _, h5_file in enumerate(self.data):
+                    field_data = h5_file[field][...]
+                    if self.norm == "std":
+                        diff_terms[field].append(field_data.mean())
+                        div_terms[field].append(field_data.std())
+                    elif self.norm == "minmax":
+                        diff_terms[field].append(field_data.min())
+                        div_terms[field].append(field_data.max() - field_data.min())
+                    elif self.norm == "tanh":
+                        diff_terms[field].append(
+                            (field_data.max() + field_data.min()) / 2.0
+                        )
+                        div_terms[field].append(
+                            (field_data.max() - field_data.min()) / 2.0
+                        )
+                    elif self.norm == "none":
+                        diff_terms[field].append(0.0)
+                        div_terms[field].append(1.0)
                     else:
-                        data_fields[field] = h5_file[field][...]
+                        raise ValueError(f"Unknown normalization type: {self.norm}")
 
-                if self.norm == "std":
-                    diff_terms.append(
-                        torch.tensor([data_fields[f].mean() for f in self.fields])
-                    )
-                    div_terms.append(
-                        torch.tensor([data_fields[f].std() for f in self.fields])
-                    )
-                elif self.norm == "minmax":
-                    diff_terms.append(
-                        torch.tensor([data_fields[f].min() for f in self.fields])
-                    )
-                    div_terms.append(
-                        torch.tensor([
-                            data_fields[f].max() - data_fields[f].min() for f in self.fields
-                        ])
-                    )
-                elif self.norm == "tanh":
-                    diff_terms.append(
-                        torch.tensor([
-                            (data_fields[f].max() + data_fields[f].min()) / 2.0 for f in self.fields
-                        ])
-                    )
-                    div_terms.append(
-                        torch.tensor([
-                            (data_fields[f].max() - data_fields[f].min()) / 2.0 for f in self.fields
-                        ])
-                    )
-                else:
-                    self.norm = "none"
-                    return self.diff_term, self.div_term
-            diff_term = torch.stack(diff_terms).mean(dim=0)
-            div_term = torch.stack(div_terms).mean(dim=0) + 1e-8
+                diff_terms[field] = np.mean(diff_terms[field]).item()
+                div_terms[field] = np.mean(div_terms[field]).item() + 1e-8
 
-        self.diff_term = diff_term
-        self.div_term = div_term
+        self.diff_terms = diff_terms
+        self.div_terms = div_terms
 
-        return self.diff_term, self.div_term
+        return self.diff_terms, self.div_terms
 
-    def heater_temp(self, filename):
-        """
-        Extract the heater temperature from the filename
-        """
-        if "Twall" in filename:
-            return int(filename.split("-")[-1].split(".")[0])
-        else:
-            return 103
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         samples_per_traj = [
@@ -131,7 +113,6 @@ class BubblemlForecast(Dataset):
         cumulative_samples = np.cumsum(samples_per_traj)
         file_idx = np.searchsorted(cumulative_samples, idx, side="right")
         start = idx + self.start_time - (cumulative_samples[file_idx - 1] if file_idx > 0 else 0)
-        temp_diff = self.max_temps[file_idx] - self.min_temps[file_idx]
 
         inp_slice = slice(start, start + self.time_window)
         out_slice = slice(start + self.time_window, start + 2 * self.time_window)
@@ -139,26 +120,35 @@ class BubblemlForecast(Dataset):
         inp_data = []
         out_data = []
 
-        for field in self.fields:
-            if field == "temperature":
-                inp_data.append(
-                    torch.tensor(
-                        self.data[file_idx][field][inp_slice] * temp_diff + self.min_temps[file_idx]
-                    )
-                )
-                out_data.append(
-                    torch.tensor(
-                        self.data[file_idx][field][out_slice] * temp_diff + self.min_temps[file_idx]
-                    )
-                )
-            else:
-                inp_data.append(torch.tensor(self.data[file_idx][field][inp_slice]))
-                out_data.append(torch.tensor(self.data[file_idx][field][out_slice]))
+        for field in self.input_fields:
+            data_item = torch.tensor(self.data[file_idx][field][inp_slice])
+            if self.downsample_factor > 1:
+                _, h, w = data_item.shape
+                new_h, new_w = h // self.downsample_factor, w // self.downsample_factor
+                data_item = F.interpolate(
+                    data_item.unsqueeze(1),
+                    size=(new_h, new_w),
+                    mode="nearest"
+                ).squeeze(1)
+            inp_data.append(
+                (data_item - self.diff_terms[field]) / self.div_terms[field]
+            )
+        for field in self.output_fields:
+            data_item = torch.tensor(self.data[file_idx][field][out_slice])
+            if self.downsample_factor > 1:
+                _, h, w = data_item.shape
+                new_h, new_w = h // self.downsample_factor, w // self.downsample_factor
+                data_item = F.interpolate(
+                    data_item.unsqueeze(1),
+                    size=(new_h, new_w),
+                    mode="nearest"
+                ).squeeze(1)
+            out_data.append(
+                (data_item - self.diff_terms[field]) / self.div_terms[field]
+            )
 
-        inp_data = torch.stack(inp_data)                                   # (C, T, H, W)
-        out_data = torch.stack(out_data)                                   # (C, T, H, W)
-
-        inp_data = (inp_data - self.diff_term.view(-1, 1, 1, 1)) / self.div_term.view(-1, 1, 1, 1)
-        out_data = (out_data - self.diff_term.view(-1, 1, 1, 1)) / self.div_term.view(-1, 1, 1, 1)
+        inp_data = torch.stack(inp_data)                                   # (in_C, T, H, W)
+        out_data = torch.stack(out_data)                                   # (out_C, T, H, W)
 
         return inp_data.permute(1, 0, 2, 3), out_data.permute(1, 0, 2, 3)  # (T, C, H, W)
+   

@@ -1,9 +1,11 @@
+import time
 from typing import Tuple, Optional, List
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
 import torch
 from torch.optim import AdamW, Adam
+from lion_pytorch import Lion
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import matplotlib.pyplot as plt
 import lightning as L
@@ -12,7 +14,7 @@ from bubbleformer.models import get_model
 from bubbleformer.utils.losses import LpLoss
 from bubbleformer.utils.lr_schedulers import CosineWarmupLR
 from bubbleformer.utils.plot_utils import wandb_sdf_plotter, wandb_temp_plotter, wandb_vel_plotter
-import time
+
 
 class ForecastModule(L.LightningModule):
     """
@@ -46,7 +48,8 @@ class ForecastModule(L.LightningModule):
         self.log_wandb = log_wandb
 
         self.criterion = LpLoss(d=2, p=2, reduce_dims=[0,1,2], reductions=["mean", "mean", "sum"])
-        self.model_cfg["params"]["fields"] = len(self.data_cfg["fields"])
+        self.model_cfg["params"]["input_fields"] = len(self.data_cfg["input_fields"])
+        self.model_cfg["params"]["output_fields"] = len(self.data_cfg["output_fields"])
         self.model_cfg["params"]["time_window"] = self.data_cfg["time_window"]
         self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
         #self.model = torch.compile(self.model)
@@ -133,6 +136,8 @@ class ForecastModule(L.LightningModule):
             optimizer = AdamW(self.model.parameters(), **opt_params)
         elif opt_name == "adam":
             optimizer = Adam(self.model.parameters(), **opt_params)
+        elif opt_name == "lion":
+            optimizer = Lion(self.model.parameters(), **opt_params)
         else:
             raise ValueError(f"Optimizer {opt_name} not supported")
 

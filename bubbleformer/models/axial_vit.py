@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as cp
 import numpy as np
 from einops import rearrange
 
@@ -83,7 +84,8 @@ class AViT(nn.Module):
     """
     def __init__(
         self,
-        fields: int = 3,
+        input_fields: int = 3,
+        output_fields: int = 3,
         time_window: int = 12,
         patch_size: int = 16,
         embed_dim: int = 768,
@@ -99,7 +101,7 @@ class AViT(nn.Module):
         # Hierarchical Patch Embedding
         self.embed = HMLPEmbed(
             patch_size=patch_size,
-            in_channels=fields,
+            in_channels=input_fields,
             embed_dim=embed_dim,
         )
         # Factored spacetime block with (space/time axial attention)
@@ -119,7 +121,7 @@ class AViT(nn.Module):
         self.debed = HMLPDebed(
             patch_size=patch_size,
             embed_dim=embed_dim,
-            out_channels=fields
+            out_channels=output_fields
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -138,6 +140,7 @@ class AViT(nn.Module):
 
         # Process
         for blk in self.blocks:
+            # x = cp.checkpoint(blk, x, use_reentrant=False)
             x = blk(x)
 
         # Decode

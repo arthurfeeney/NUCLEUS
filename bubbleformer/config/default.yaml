@@ -1,12 +1,11 @@
 log_dir: /pub/sheikhh1/bubbleformer_logs
 seed: 42
 
-distributed: False
 nodes:
 devices:
 
 max_epochs:
-batch_size: 4
+batch_size:
 
 checkpoint_path:
 
@@ -15,10 +14,11 @@ wandb_tags:
   - time_window-5
   - relative_l2_loss
   - AViT-Default
-  - PB-Subcooled
+  - SingleBubble
+  - Lion optimizer
 defaults:
   - _self_
-  - data_cfg: poolboiling_subcooled
+  - data_cfg: singlebubble
   - model_cfg: avit_small
-  - optim_cfg: adamw
+  - optim_cfg: lion
   - scheduler_cfg: cosine_warmup

@@ -77,20 +77,23 @@ class ModernUnet(nn.Module):
     def __init__(
         self,
         time_window: int = 5,
-        fields: int = 4,
+        input_fields: int = 4,
+        output_fields: int = 4,
         hidden_channels: int = 32,
         ch_mults: List[int] = [],
         norm: bool = True,
     ):
         super().__init__()
         self.time_window = time_window
-        self.fields = fields
+        self.input_fields = input_fields
+        self.output_fields = output_fields
         self.hidden_channels = hidden_channels
         self.ch_mults = ch_mults
         self.norm = norm
 
         self.activation = nn.GELU()
-        in_channels = fields * time_window
+        in_channels = input_fields * time_window
+        final_out = output_fields * time_window
 
         self.image_proj = nn.Conv2d(in_channels, hidden_channels, kernel_size=1)
 
@@ -148,7 +151,7 @@ class ModernUnet(nn.Module):
         else:
             self.norm = nn.Identity()
 
-        self.final = nn.Conv2d(in_channels, fields * time_window, kernel_size=1)
+        self.final = nn.Conv2d(in_channels, final_out, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -191,16 +194,18 @@ class ClassicUnet(nn.Module):
     def __init__(
         self,
         time_window: int = 5,
-        fields: int = 4,
+        input_fields: int = 4,
+        output_fields: int = 4,
         hidden_channels: int = 32,
     ):
         super().__init__()
         self.time_window = time_window
-        self.fields = fields
+        self.input_fields = input_fields
+        self.output_fields = output_fields
         self.hidden_channels = hidden_channels
 
         self.encoder1 = ClassicUnetBlock(
-                            in_channels=fields * time_window,
+                            in_channels=input_fields * time_window,
                             out_channels=hidden_channels
                         )
         self.pool1 = nn.MaxPool2d(
@@ -285,7 +290,7 @@ class ClassicUnet(nn.Module):
 
         self.conv = nn.Conv2d(
                             in_channels=hidden_channels,
-                            out_channels=fields * time_window,
+                            out_channels=output_fields * time_window,
                             kernel_size=1
                         )
 
