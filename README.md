@@ -123,7 +123,7 @@ python scripts/train.py
 To train with a specific configuration:
 
 ```bash
-python scripts/train.py data_cfg=poolboiling_saturated model_cfg=avit_small
+python scripts/train.py nodes=1 devices=1 max_epochs=400 batch_size=8
 ```
 
 ### Inference
@@ -137,5 +137,5 @@ python scripts/inference.py --model_path /path/to/model --data_path /path/to/dat
 
 2. Using the Jupyter notebook:
 ```bash
-jupyter notebook scripts/inference_autoregressive.ipynb
+scripts/inference_autoregressive.ipynb
 ```
