@@ -13,12 +13,12 @@ use_wandb: True
 wandb_tags:
   - time_window-5
   - relative_l2_loss
-  - AViT-Default
-  - SingleBubble
-  - Lion optimizer
+  - FiLM-AViT-Small
+  - Single_Bubble
+  - Lion_optimizer
 defaults:
   - _self_
-  - data_cfg: bubbleml_subcooled
-  - model_cfg: avit_small
+  - data_cfg: singlebubble
+  - model_cfg: film_avit_small
   - optim_cfg: lion
   - scheduler_cfg: cosine_warmup

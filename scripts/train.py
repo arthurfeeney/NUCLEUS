@@ -12,11 +12,9 @@ from lightning import seed_everything, Trainer
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelSummary, Callback
 from lightning.pytorch.plugins.environments import SLURMEnvironment
-from lightning.pytorch.strategies import FSDPStrategy
-# from lightning.pytorch.profilers import PyTorchProfiler
 
-from bubbleformer.data import BubblemlForecast
-from bubbleformer.modules import ForecastModule
+from bubbleformer.data import BubbleForecast
+from bubbleformer.modules import ForecastModule, ConditionedForecastModule
 from bubbleformer.models.axial_vit import SpaceTimeBlock
 
 def checkpoint_policy(module, **kwargs):
@@ -99,22 +97,26 @@ def main(cfg: DictConfig) -> None:
 
     logger = CSVLogger(save_dir=params["log_dir"])
 
-    train_dataset = BubblemlForecast(
+    train_dataset = BubbleForecast(
                 filenames=cfg.data_cfg.train_paths,
                 input_fields=cfg.data_cfg.input_fields,
                 output_fields=cfg.data_cfg.output_fields,
                 norm=cfg.data_cfg.normalize,
                 downsample_factor=cfg.data_cfg.downsample_factor,
                 time_window=cfg.data_cfg.time_window,
+                start_time=cfg.data_cfg.start_time,
+                return_fluid_params=cfg.data_cfg.return_fluid_params,
             )
     normalization_constants = train_dataset.normalize()
-    val_dataset = BubblemlForecast(
+    val_dataset = BubbleForecast(
                 filenames=cfg.data_cfg.val_paths,
                 input_fields=cfg.data_cfg.input_fields,
                 output_fields=cfg.data_cfg.output_fields,
                 norm=cfg.data_cfg.normalize,
                 downsample_factor=cfg.data_cfg.downsample_factor,
                 time_window=cfg.data_cfg.time_window,
+                start_time=cfg.data_cfg.start_time,
+                return_fluid_params=cfg.data_cfg.return_fluid_params,
             )
     val_dataset.normalize(*normalization_constants)
     diff_term = normalization_constants[0]
@@ -130,12 +132,12 @@ def main(cfg: DictConfig) -> None:
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=cfg.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=4,
         pin_memory=True,
     )
-
-    train_module = ForecastModule(
+    if cfg.data_cfg.return_fluid_params:
+        train_module = ConditionedForecastModule(
                 model_cfg=cfg.model_cfg,
                 data_cfg=cfg.data_cfg,
                 optim_cfg=cfg.optim_cfg,
@@ -143,28 +145,15 @@ def main(cfg: DictConfig) -> None:
                 log_wandb=cfg.use_wandb,
                 normalization_constants=(diff_term, div_term),
             )
-    # fsdp_strategy = FSDPStrategy(
-    #     activation_checkpointing_policy={SpaceTimeBlock},
-    #     sharding_strategy="SHARD_GRAD_OP",
-    #     state_dict_type="full",
-    #     limit_all_gathers=True,
-    # )
-
-    # profiler = PyTorchProfiler(
-    #     dirpath=params["log_dir"],
-    #     filename="fsdp_trace",
-    #     export_to_chrome=True,
-    #     profile_memory=True,
-    #     record_shapes=True,
-    #     with_stack=True,
-    #     schedule=torch.profiler.schedule(
-    #         wait=1,
-    #         warmup=1,
-    #         active=3,
-    #         repeat=0,
-    #     ),
-    #     on_trace_ready=torch.profiler.tensorboard_trace_handler(params["log_dir"]),
-    # )
+    else:
+        train_module = ForecastModule(
+                model_cfg=cfg.model_cfg,
+                data_cfg=cfg.data_cfg,
+                optim_cfg=cfg.optim_cfg,
+                scheduler_cfg=cfg.scheduler_cfg,
+                log_wandb=cfg.use_wandb,
+                normalization_constants=(diff_term, div_term),
+            )
 
     trainer = Trainer(
         accelerator="gpu",
@@ -176,9 +165,8 @@ def main(cfg: DictConfig) -> None:
         default_root_dir=params["log_dir"],
         plugins=[SLURMEnvironment(requeue_signal=signal.SIGHUP)],
         enable_model_summary=True,
-        # profiler=profiler,
-        # limit_train_batches=50,
-        limit_val_batches=50,
+        limit_train_batches=1000,
+        limit_val_batches=25,
         num_sanity_val_steps=0,
         callbacks=[ModelSummary(max_depth=-1), PreemptionCheckpointCallback(preempt_ckpt_path)]
     )

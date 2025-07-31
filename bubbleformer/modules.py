@@ -70,7 +70,7 @@ class ForecastModule(L.LightningModule):
     def forward(
         self,
         x: torch.Tensor
-    ) -> torch.Tensor:
+    ) -> torch.Tensor:     
         return self.model(x)
 
     def training_step(
@@ -259,3 +259,98 @@ class ForecastModule(L.LightningModule):
                 wandb.log({"val_loss_epoch": val_loss, "epoch": self.current_epoch})
             except:
                 pass
+
+
+class ConditionedForecastModule(ForecastModule):
+    """
+    Module for training forecasting models with different
+    input and output time windows.
+    Args:
+        model_cfg (DictConfig): YAML Model config loaded using OmegaConf
+        data_cfg (DictConfig): YAML Data config loaded using OmegaConf
+        optim_cfg (DictConfig): YAML Optimizer config loaded using OmegaConf
+        scheduler_cfg (DictConfig): YAML Scheduler config loaded using OmegaConf
+        log_wandb (bool): Whether to log to wandb
+        normalization_constants (Tuple[List, List]): 
+                    Difference and Division constants for normalization
+    """
+    def __init__(
+        self,
+        model_cfg: DictConfig,
+        data_cfg: DictConfig,
+        optim_cfg: DictConfig,
+        scheduler_cfg: DictConfig,
+        log_wandb: bool = False,
+        normalization_constants: Tuple[List, List] = None
+    ):
+        super().__init__(
+            model_cfg=model_cfg,
+            data_cfg=data_cfg,
+            optim_cfg=optim_cfg,
+            scheduler_cfg=scheduler_cfg,
+            log_wandb=log_wandb,
+            normalization_constants=normalization_constants
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cond: torch.Tensor
+    ) -> torch.Tensor:
+        return self.model(x, cond)
+
+    def training_step(
+        self,
+        batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
+        batch_idx: int
+    ) -> torch.Tensor:
+        inp, tgt, cond = batch
+        pred = self.model(inp, cond)
+        loss = self.criterion(pred, tgt)
+
+        self.log(
+            "train_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True
+        )
+        opt = self.optimizers()
+        current_lr = opt.param_groups[0]['lr']
+        self.log(
+            "learning_rate",
+            current_lr,
+            on_step=True,
+            on_epoch=False,
+            prog_bar=True,
+            logger=True
+        )
+        if self.log_wandb and self.trainer.is_global_zero:
+            wandb.log({"train_loss": loss, "learning_rate": current_lr})
+
+        return loss
+
+    def validation_step(
+        self,
+        batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
+        batch_idx: int
+    ) -> torch.Tensor:
+        inp, tgt, cond = batch
+        pred = self.model(inp, cond)
+        loss = self.criterion(pred, tgt)
+        if batch_idx == 0:
+            self.validation_sample = (inp.detach(), tgt.detach(), pred.detach())
+
+        self.log(
+            "val_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True
+        )
+        if self.log_wandb and self.trainer.is_global_zero:
+            wandb.log({"val_loss": loss})
+
+        return loss

@@ -1,1 +1,1 @@
-from .dataset import BubblemlForecast
+from .dataset import BubbleForecast

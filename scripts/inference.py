@@ -2,7 +2,7 @@ import os
 import torch
 from collections import OrderedDict
 from bubbleformer.models import get_model
-from bubbleformer.data import BubblemlForecast
+from bubbleformer.data import BubbleForecast
 from bubbleformer.utils.losses import LpLoss
 import matplotlib.pyplot as plt
 import cv2
@@ -50,7 +50,7 @@ def plot_bubbleml(
     vel_min, vel_max = round(vel_mean - 3 * vel_std, 2), round(vel_mean + 3 * vel_std, 2)
 
     temp_mean, temp_std = torch.mean(targets[:, 1]).item(), torch.std(targets[:, 1]).item()
-    temp_min, temp_max = round(temp_mean - 3 * temp_std, 2), round(temp_mean + 3 * temp_std, 2)
+    temp_min, temp_max = 58.0, 92.0
 
     sdf_mean, sdf_std = torch.mean(targets[:, 0]).item(), torch.std(targets[:, 0]).item()
     sdf_min, sdf_max = round(sdf_mean - 3 * sdf_std, 2), round(sdf_mean + 3 * sdf_std, 2)
@@ -173,29 +173,52 @@ def plot_bubbleml(
 
 
 
-test_path = ["/share/crsp/lab/ai4ts/share/BubbleML_f32/PoolBoiling-Saturated-FC72-2D-0.1/Twall-92.hdf5"]
-test_dataset = BubblemlForecast(filenames=test_path, fields=["dfun", "temperature", "velx", "vely"], norm="none", time_window=5, start_time=95)
+test_path = ["/share/crsp/lab/amowli/share/Bubbleformer/SingleBubble-Saturated-FC72-2D/Twall_91.hdf5"]
+test_dataset = BubbleForecast(
+    filenames=test_path,
+    input_fields=["dfun", "temperature", "velx", "vely"],
+    output_fields=["dfun", "temperature", "velx", "vely"],
+    norm="none",
+    downsample_factor=1,
+    time_window=5,
+    start_time=100,
+    return_fluid_params=False,
+)
 
 model_name = "avit"
 model_kwargs = {
-            "fields": 4,
+            "input_fields": 4,
+            "output_fields": 4,
             "time_window": 5,
             "patch_size": 16,
             "embed_dim": 384,
             "processor_blocks": 12,
             "num_heads": 6,
             "drop_path": 0.2,
+            "attn_scale": True,
+            "feat_scale": True,
             }
 
 model = get_model(model_name, **model_kwargs)
 model = model.cuda()
 
-weights_path = "/pub/sheikhh1/bubbleformer_logs/avit_poolboiling_saturated_36223568/ckpt_final.ckpt"
+weights_path = "/pub/sheikhh1/bubbleformer_logs/avit_singlebubble_saturated_38080061/hpc_ckpt_3.ckpt"
 model_data = torch.load(weights_path, weights_only=False)
 
-diff_term, div_term = model_data['hyper_parameters']['normalization_constants']
-diff_term = torch.tensor(diff_term)
-div_term = torch.tensor(div_term)
+diff_term = {
+    "dfun": 0.0,
+    "temperature": 0.0,
+    "velx": 0.0,
+    "vely": 0.0,
+}
+div_term = {
+    "dfun": 1.0,
+    "temperature": 1.0,
+    "velx": 1.0,
+    "vely": 1.0,
+}
+# diff_term = torch.tensor(diff_term)
+# div_term = torch.tensor(div_term)
 weight_state_dict = OrderedDict()
 for key, val in model_data["state_dict"].items():
     name = key[6:]
@@ -233,12 +256,12 @@ model_targets = torch.cat(model_targets, dim=0)     # T, C, H, W
 timesteps = torch.cat(timesteps, dim=0)             # T,
 num_var = len(test_dataset.fields)                  # C
 
-preds = model_preds * div_term.view(1, num_var, 1, 1) + diff_term.view(1, num_var, 1, 1)     # denormalize
-targets = model_targets * div_term.view(1, num_var, 1, 1) + diff_term.view(1, num_var, 1, 1) # denormalize
+# preds = model_preds * div_term.view(1, num_var, 1, 1) + diff_term.view(1, num_var, 1, 1)     # denormalize
+# targets = model_targets * div_term.view(1, num_var, 1, 1) + diff_term.view(1, num_var, 1, 1) # denormalize
 
-save_dir = "/pub/sheikhh1/bubbleformer_logs/avit_poolboiling_saturated_36223568/epoch_189_outputs/sat_92"
+save_dir = "/pub/sheikhh1/bubbleformer_logs/avit_singlebubble_saturated_38080061/epoch_327_outputs/fc_91"
 os.makedirs(save_dir, exist_ok=True)
 save_path = os.path.join(save_dir, "predictions.pt")
-torch.save({"preds": preds, "targets": targets, "timesteps": timesteps}, save_path)
-plot_bubbleml(preds, targets, timesteps, save_dir)
+torch.save({"preds": model_preds, "targets": model_targets, "timesteps": timesteps}, save_path)
+plot_bubbleml(model_preds, model_targets, timesteps, save_dir)
 

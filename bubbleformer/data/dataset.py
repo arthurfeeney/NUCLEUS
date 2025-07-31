@@ -1,10 +1,11 @@
 """
 This module contains dataset class for Time Series Forecasting
 Classes:
-    BubbleMLForecast: Dataset class for BubbleML dataset
+    BubbleForecast: Dataset class for BubbleML dataset
 Author: Sheikh Md Shakeel Hassan
 """
 from typing import List, Optional, Tuple, Dict
+import json
 
 import numpy as np
 import h5py as h5
@@ -12,7 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-class BubblemlForecast(Dataset):
+class BubbleForecast(Dataset):
     """
     Dataset class for time series forecasting on the BubbleML dataset
     """
@@ -25,6 +26,7 @@ class BubblemlForecast(Dataset):
         downsample_factor: int = 1,
         time_window: int = 16,
         start_time: int = 50,
+        return_fluid_params: bool = False,
     ):
         super().__init__()
         self.filenames = filenames
@@ -53,6 +55,15 @@ class BubblemlForecast(Dataset):
         self.fields = list(set(self.input_fields + self.output_fields))
         self.diff_terms = {k:[] for k in self.fields}
         self.div_terms = {k:[] for k in self.fields}
+
+        self.return_fluid_params = return_fluid_params
+        if self.return_fluid_params:
+            fluid_params_files = [fname.replace(".hdf5", ".json") for fname in filenames]
+            self.fluid_params = []
+            for fluid_params_file in fluid_params_files:
+                with open(fluid_params_file, "r", encoding="utf-8") as f:
+                    fluid_params = json.load(f)
+                self.fluid_params.append(fluid_params)
 
     def __len__(self):
         total_len = 0
@@ -152,5 +163,24 @@ class BubblemlForecast(Dataset):
         inp_data = torch.stack(inp_data)                                   # (in_C, T, H, W)
         out_data = torch.stack(out_data)                                   # (out_C, T, H, W)
 
-        return inp_data.float().permute(1, 0, 2, 3), out_data.float().permute(1, 0, 2, 3)  # (T, C, H, W)
-   
+        if self.return_fluid_params:
+            fluid_params = self.fluid_params[file_idx]
+            fluid_params_tensor = torch.tensor(
+                [
+                    fluid_params["inv_reynolds"],
+                    fluid_params["cpgas"],
+                    fluid_params["mugas"],
+                    fluid_params["rhogas"],
+                    fluid_params["thcogas"],
+                    fluid_params["stefan"],
+                    fluid_params["prandtl"],
+                    fluid_params["heater"]["nucWaitTime"],
+                    fluid_params["heater"]["wallTemp"],
+                ],
+                dtype=torch.float32,
+            )
+            return inp_data.float().permute(1, 0, 2, 3), \
+                    out_data.float().permute(1, 0, 2, 3), \
+                    fluid_params_tensor
+
+        return inp_data.float().permute(1, 0, 2, 3), out_data.float().permute(1, 0, 2, 3)

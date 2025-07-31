@@ -1,5 +1,5 @@
 import pytest
-from bubbleformer.data import BubblemlForecast
+from bubbleformer.data import BubbleForecast
 
 @pytest.mark.parametrize("input_fields", [
     ["dfun"],
@@ -22,10 +22,10 @@ def test_bubblemlforecastdataset(
     time_window
     ):
     """
-    Test the BubblemlForecast dataset
-    The samples are 2 50x64x64 (TxHxW) trajectories 
+    Test the BubbleForecast dataset
+    The samples are 2 50x64x64 (TxHxW) trajectories
     """
-    dataset = BubblemlForecast(
+    dataset = BubbleForecast(
         filenames=["samples/sample_1.hdf5", "samples/sample_2.hdf5"],
         input_fields=input_fields,
         output_fields=output_fields,
