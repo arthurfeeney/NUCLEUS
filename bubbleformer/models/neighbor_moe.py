@@ -54,8 +54,12 @@ class NeighborMoE(nn.Module):
         self.debed = HMLPDebed(
             patch_size=patch_size,
             embed_dim=embed_dim,
-            out_channels=output_fields
+            out_channels=embed_dim
         )
+        
+        self.sdf_proj = nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1, dtype=torch.float32)
+        self.temp_proj = nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1, dtype=torch.float32)
+        self.vel_proj = nn.Conv2d(embed_dim, 2, kernel_size=3, padding=1, dtype=torch.float32)
         
     def forward(self, x: torch.Tensor, fluid_params: torch.Tensor) -> torch.Tensor:
         """
@@ -65,6 +69,8 @@ class NeighborMoE(nn.Module):
         B, T, _, _, _ = x.shape
         
         input = x.clone()
+        assert input.dtype == torch.float32
+        assert fluid_params.dtype == torch.float32
 
         # Encode
         with record_function("encode"):
@@ -96,12 +102,23 @@ class NeighborMoE(nn.Module):
         x = x + embed
        
         # Decode
-        with record_function("decode"):
-            x = rearrange(x, "b t c h w -> (b t) c h w")
-            x = self.debed(x)
-            x = rearrange(x, "(b t) c h w -> b t c h w", t=T)
+        x = rearrange(x, "b t c h w -> (b t) c h w")
+        x = self.debed(x)
+        x = nn.functional.gelu(x)
         
-        # Skip connection from the original input
-        x = x + input
+        # convert to float32 for high-precision output projection
+        x = x.to(torch.float32)
+        
+        # project to output fields
+        sdf = self.sdf_proj(x)
+        temp = self.temp_proj(x)
+        vel = self.vel_proj(x)
+        sdf = rearrange(sdf, "(b t) c h w -> b t c h w", b=B, t=T)
+        temp = rearrange(temp, "(b t) c h w -> b t c h w", b=B, t=T)
+        vel = rearrange(vel, "(b t) c h w -> b t c h w", b=B, t=T)
+        x = torch.cat((sdf, temp, vel), dim=2)
+        
+        # Skip connection from the last timestep of the original input
+        x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)
         
         return x, moe_outputs
