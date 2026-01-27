@@ -7,6 +7,8 @@ and less accurate away from the interface (which seems to be true in practice!)
 import numpy as np
 import heapq
 import torch
+from bubbleformer.utils.interp import upsample, downsample
+import skfmm
 
 # Status codes for the fast marching method
 KNOWN = 2
@@ -20,11 +22,12 @@ def sdf_reinit(
     far_threshold: float = -4.0
 ) -> torch.Tensor:
     r"""
-    This applies a reinitialization of the SDF using the fast marching method. It only
+    Applies a reinitialization of the SDF using the fast marching method. It only
     updates points that are sufficiently far from the liquid-vapor interface.
     Args:
         sdf_init: torch.Tensor, shape (T,H, W), the SDF to reinitialize.
         dx: float, the grid spacing.
+        scale_factor: int, the scale factor for the upsampling and downsampling.
         far_threshold: float, the threshold for far points.
     Returns:
         torch.Tensor, shape (T,H, W), the reinitialized SDF.
@@ -33,20 +36,23 @@ def sdf_reinit(
         sdf_init = sdf_init.unsqueeze(0)
     assert sdf_init.dim() == 3, "SDF must be of shape (T, H, W) or (H, W)"
     
+    device = sdf_init.device
+    sdf_init = sdf_init.detach().cpu()
+    
+    reinitialized_sdf = sdf_init.clone()
     for i in range(sdf_init.shape[0]):
         # The fast marching uses finite differences, so it works better on a finer grid. 
         # Fortunately, the SDF is very smooth, so bicubic interpolation seems good enough.
         # So, this upsamples, does fast marching, and then downsamples.
-        upsample_sdf_init = torch.nn.functional.interpolate(
-            sdf_init[i].unsqueeze(0).unsqueeze(0), scale_factor=scale_factor, mode="bicubic").squeeze()
-        upsample_sdf_corrected = torch.from_numpy(fast_marching_2d(upsample_sdf_init.numpy(), dx=dx))
-        sdf_corrected = torch.nn.functional.interpolate(
-            upsample_sdf_corrected.unsqueeze(0).unsqueeze(0), scale_factor=1 / scale_factor, mode="bicubic").squeeze()
+        upsample_sdf_init = upsample(sdf_init[i].to(torch.float64), scale_factor)
+        #upsample_sdf_corrected = torch.from_numpy(fast_marching_2d(upsample_sdf_init.detach().cpu().numpy(), dx=dx / scale_factor))
+        dxs = np.full(2, dx / scale_factor, dtype=np.float64)
+        upsample_sdf_corrected = torch.from_numpy(skfmm.distance(upsample_sdf_init.detach().cpu().numpy(), dx=dxs))
+        sdf_corrected = downsample(upsample_sdf_corrected, scale_factor)
         # Only reinitialize the SDF when sufficiently far from the interfaces
-        far_mask = sdf_init < far_threshold
-        sdf = sdf_init.clone()
-        sdf[i, far_mask] = sdf_corrected[far_mask]
-    return sdf.squeeze(0)
+        far_mask = sdf_init[i] < far_threshold
+        reinitialized_sdf[i, far_mask] = sdf_corrected[far_mask].to(sdf_init.dtype)
+    return reinitialized_sdf.squeeze(0).to(device)
 
 def fast_marching_2d(phi_init, dx=1.0):
     ny, nx = phi_init.shape
@@ -62,11 +68,9 @@ def fast_marching_2d(phi_init, dx=1.0):
             neighbors = [phi_init[i-1,j], phi_init[i+1,j], 
                         phi_init[i,j-1], phi_init[i,j+1]]
             if any([phi_init[i,j] * n < 0 for n in neighbors]):
-                # Near interface - compute distance by linear interpolation
-                # phi[i,j] = compute_interface_distance(phi_init, i, j, dx)
-                
                 # Near interface, keep distance unchanged (not updated phi[i, j])
                 status[i,j] = KNOWN
+    
     
     # Initialize trial points (neighbors of known points)
     heap = []

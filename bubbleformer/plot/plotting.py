@@ -1,9 +1,11 @@
 from re import M
 import torch
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize, TwoSlopeNorm, SymLogNorm, LinearSegmentedColormap
+from matplotlib.colors import Normalize, TwoSlopeNorm, SymLogNorm, LogNorm, LinearSegmentedColormap
 import seaborn as sns
 from typing import Optional
+from bubbleformer.utils.physical_metrics import vorticity
+from bubbleformer.test import TestResults
 
 def ax_default(ax, title: Optional[str] = None):
     if title is not None:
@@ -49,7 +51,7 @@ def plot_temp(ax, temp: torch.Tensor, bulk_temp, heater_temp, title: Optional[st
 def plot_vel_mag(ax, vel_mag: torch.Tensor, title: Optional[str] = None):
     assert vel_mag.dim() == 2, "Vel mag must be a 2D tensor (H, W)"
     vel_mag = vel_mag.detach().cpu().numpy()
-    im = ax.imshow(vel_mag, cmap="plasma", vmin=0)
+    im = ax.imshow(vel_mag, cmap="rocket", vmin=0)
     ax_default(ax, title)
     return im
 
@@ -62,6 +64,45 @@ def plot_vorticity(ax, vorticity: torch.Tensor, min_vort=None, max_vort=None, ti
     ax_default(ax, title)
     return im
 
+def plot_rollout(
+    save_dir: str,
+    rollout: torch.Tensor,
+    test_results: TestResults,
+    step_size: int
+):
+    # TODO: really don't want batch dimension, but some of the metrics are
+    # pretty rigid about using a batch dimension...
+    rollout = rollout.squeeze(0)
+    assert rollout.dim() == 4, "Rollout must be a 4D tensor (B, T, C, H, W)"
+    for timestep in range(0, rollout.shape[0], step_size):
+        sdf = torch.flipud(rollout[timestep, 0, :, :])
+        temp = torch.flipud(rollout[timestep, 1, :, :])
+        velx = torch.flipud(rollout[timestep, 2, :, :])
+        vely = torch.flipud(rollout[timestep, 3, :, :])
+        vel_mag = torch.sqrt(velx**2 + vely**2)
+        vort = vorticity(velx, vely, 1/4, 1/4)
+        
+        fig, axs = plt.subplots(1, 4, figsize=(10, 5), layout="constrained")
+        
+        # 1. Plot the SDF
+        im = plot_sdf(axs[0], sdf)
+        plt.colorbar(im, ax=axs[0], fraction=0.04, pad=0.05)
+        
+        # 2. Plot the temperature
+        im = plot_temp(axs[1], temp, test_results.fluid_params["bulk_temp"], test_results.fluid_params["heater"]["wallTemp"])
+        plt.colorbar(im, ax=axs[1], fraction=0.04, pad=0.05)
+        
+        # 3. Plot the velocity magnitude
+        im = plot_vel_mag(axs[2], vel_mag)
+        plt.colorbar(im, ax=axs[2], fraction=0.04, pad=0.05)
+        
+        # 4. Plot the vorticity
+        im = plot_vorticity(axs[3], vort)
+        plt.colorbar(im, ax=axs[3], fraction=0.04, pad=0.05)
+        
+        plt.savefig(f"{save_dir}/rollout_{str(timestep).zfill(4)}.png")
+        plt.close()
+        
 if __name__ == "__main__":
     import h5py
     import numpy as np
@@ -73,15 +114,16 @@ if __name__ == "__main__":
         vely = torch.from_numpy(f["vely"][:])
 
     vel_mag = torch.sqrt(velx**2 + vely**2)
-    v = vorticity(velx[None, ...], vely[None, ...], 1/32, 1/32)
-    v = v.squeeze()
+    v = vorticity(velx, vely, 1/32, 1/32)
 
+    timestep = 400
     fig, axs = plt.subplots(2, 2, figsize=(10, 10), layout="constrained")
-    t = plot_sdf(axs[0, 0], torch.flipud(sdf[400]))
-    plt.colorbar(t, ax=axs[0, 0])
-    t = plot_temp(axs[0, 1], torch.flipud(temp[400]), 50, 97)
-    plt.colorbar(t, ax=axs[0, 1])
-    plot_vel_mag(axs[1, 0], torch.flipud(vel_mag[400]))
-    t = plot_vorticity(axs[1, 1], torch.flipud(v[400]))
-    plt.colorbar(t, ax=axs[1, 1])
+    t = plot_sdf(axs[0, 0], torch.flipud(sdf[timestep]))
+    plt.colorbar(t, ax=axs[0, 0], ticks=[-8, -4, 0, 0.1, 0.4], fraction=0.05, pad=0.05)
+    t = plot_temp(axs[0, 1], torch.flipud(temp[timestep]), 50, 97)
+    plt.colorbar(t, ax=axs[0, 1], fraction=0.05, pad=0.05)
+    t = plot_vel_mag(axs[1, 0], torch.flipud(vel_mag[timestep]))
+    plt.colorbar(t, ax=axs[1, 0], fraction=0.05, pad=0.05)
+    t = plot_vorticity(axs[1, 1], torch.flipud(v[timestep]))
+    plt.colorbar(t, ax=axs[1, 1], fraction=0.05, pad=0.05)
     plt.savefig("test.png")

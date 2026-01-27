@@ -6,6 +6,7 @@ import torch
 from collections import deque
 import dataclasses
 from typing import List
+from bubbleformer.utils.interp import upsample, downsample
 
 @dataclasses.dataclass
 class BubbleMetrics:
@@ -79,16 +80,27 @@ def physical_metrics(
 
 def vorticity(velx, vely, dx, dy):
     r"""
-    This computes the vorticity (B, T, H, W) from the velocity fields.
+    This computes the vorticity (..., H, W) from the velocity fields.
     Args:
-        velx: Velocity field in the x direction (B, T, H, W)
-        vely: Velocity field in the y direction (B, T, H, W)
+        velx: Velocity field in the x direction (..., H, W)
+        vely: Velocity field in the y direction (..., H, W)
         dx: Spatial resolution in the x direction
         dy: Spatial resolution in the y direction
     """
-    assert velx.dim() == 4 and vely.dim() == 4, "Velocity fields must be of shape (B, T, H, W)"
+    assert velx.dim() >= 2 and vely.dim() >= 2, "Velocity fields must be of shape (..., H, W)"
     assert velx.shape == vely.shape, "Velocity fields must have the same shape"
     assert dx > 0 and dy > 0, "Spatial resolution must be positive"
+    
+    # If the grid is too coarse for finite difference, upsample first.
+    # We use 1/32 because that's the default for flash-x pool boiling simulations.
+    if dx > 1 / 32 or dy > 1 / 32:
+        scale_factor = dx * 32
+        upsample_velx = upsample(velx, scale_factor)
+        upsample_vely = upsample(vely, scale_factor)
+        dydx = torch.gradient(upsample_vely, spacing=1 / 32, dim=-1)[0]
+        dxdy = torch.gradient(upsample_velx, spacing=1 / 32, dim=-2)[0]
+        return downsample(dydx - dxdy, scale_factor)
+    
     dydx = torch.gradient(vely, spacing=dx, dim=-1)[0]
     dxdy = torch.gradient(velx, spacing=dy, dim=-2)[0]
     return dydx - dxdy
@@ -101,12 +113,9 @@ def interface_mask(sdf):
         for t in range(T):
             for i in range(rows):
                 for j in range(cols):
-                    # adj is a (B, T) shaped mask.
-                    adj = ((i < rows - 1 and (sdf[b, t, i, j] * sdf[b, t, i+1, j] <= 0)) or
-                        (i > 0 and (sdf[b, t, i, j] * sdf[b, t, i-1, j ] <= 0)) or
-                        (j < cols - 1 and (sdf[b, t, i, j] * sdf[b, t, i, j+1] <= 0)) or
-                        (j > 0 and (sdf[b, t, i, j] * sdf[b, t, i, j-1] <= 0)))
-                    interface[b, t, i, j] = adj
+                    nbr = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    sign_change = any(sdf[b, t, i+di, j+dj] * sdf[b, t, i, j] <= 0 for di, dj in nbr if 0 <= i+di < rows and 0 <= j+dj < cols)
+                    interface[b, t, i, j] = sign_change
     return interface.to(sdf.device)
 
 def interface_velocity(velx, vely, sdf):
@@ -143,7 +152,7 @@ def vapor_volume(sdf, dx, dy):
     This computes the vapor volume (or void fraction in domain-speak.) This is basically
     how much of the domain is in the vapor phase. It returns a tensor of shape (B, T).
     """
-    assert sdf.dim() == 4, "SDF must be of shape (B, T, H, W)"
+    assert sdf.dim() >= 2, "SDF must be of shape (..., H, W)"
     vapor_mask = sdf >= 0
     vapor_volume = torch.sum(vapor_mask, dim=(-2, -1)) * dx * dy
     return vapor_volume
@@ -153,19 +162,19 @@ def vapor_volume_at_height(sdf, dx, dy):
     This checks the amount of vapor at each row of the domain.
     This returns a tensor of shape (B, T, H).
     """
-    assert sdf.dim() == 4, "SDF must be of shape (B, T, H, W)"
+    assert sdf.dim() >= 2, "SDF must be of shape (..., H, W)"
     vapor_mask = sdf >= 0
     vapor_volume = torch.sum(vapor_mask, dim=(-1)) * dx
     return vapor_volume
 
 def liquid_temperature(temperature, sdf):
-    assert temperature.dim() == 4 and sdf.dim() == 4, "Temperature and SDF must be of shape (B, T, H, W)"
+    assert temperature.dim() >= 2 and sdf.dim() >= 2, "Temperature and SDF must be of shape (..., H, W)"
     assert temperature.shape == sdf.shape, "Temperature and SDF must have the same shape"
     liquid_mask = sdf < 0
     return (temperature * liquid_mask.to(temperature.dtype)).sum(dim=(-2, -1)) / liquid_mask.to(torch.int32).sum(dim=(-2, -1))
 
 def liquid_temperature_at_heater(temperature, sdf, heater_min, heater_max, xcoords):
-    assert temperature.dim() == 4 and sdf.dim() == 4, "Temperature and SDF must be of shape (B, T, H, W)"
+    assert temperature.dim() >= 2 and sdf.dim() >= 2, "Temperature and SDF must be of shape (..., H, W)"
     assert temperature.shape == sdf.shape, "Temperature and SDF must have the same shape"
     assert heater_min < heater_max, "Heater min must be less than heater max"
     bottom_row_liquid_mask = sdf[..., 0, :] < 0

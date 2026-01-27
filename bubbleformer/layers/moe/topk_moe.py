@@ -14,6 +14,22 @@ class TopkMoEOutput:
     topk: int
     num_experts: int
     
+    def to(self, device: torch.device):
+        self.out = self.out.to(device)
+        self.router_logits = self.router_logits.to(device)
+        self.tokens_per_expert = self.tokens_per_expert.to(device)
+        self.topk_indices = self.topk_indices.to(device)
+        self.load_balance_loss = self.load_balance_loss.to(device)
+        return self
+    
+    def detach(self):
+        self.out = self.out.detach()
+        self.router_logits = self.router_logits.detach()
+        self.tokens_per_expert = self.tokens_per_expert.detach()
+        self.topk_indices = self.topk_indices.detach()
+        self.load_balance_loss = self.load_balance_loss.detach()
+        return self
+    
 def load_balance_loss(
     router_logits: torch.Tensor,
     expert_counts: torch.Tensor,
