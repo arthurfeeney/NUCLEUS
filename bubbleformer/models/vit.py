@@ -9,14 +9,14 @@ from bubbleformer.layers import (
     HMLPEmbed, 
     HMLPDebed, 
     FiLMMLP,
-    TransformerNeighborBlock
+    TransformerBlock
 )
 from ._api import register_model
 
-__all__ = ["NeighborViT"]
+__all__ = ["ViT"]
 
-@register_model("neighbor_vit")
-class NeighborViT(nn.Module):
+@register_model("vit")
+class ViT(nn.Module):
     def __init__(
         self,
         input_fields: int = 3,
@@ -49,7 +49,7 @@ class NeighborViT(nn.Module):
         self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
 
         self.blocks = nn.ModuleList([
-            TransformerNeighborBlock(
+            TransformerBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
             )

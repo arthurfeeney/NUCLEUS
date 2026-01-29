@@ -9,14 +9,14 @@ from bubbleformer.layers import (
     HMLPEmbed, 
     HMLPDebed, 
     FiLMMLP,
-    TransformerNeighborBlock
+    TransformerAxialBlock
 )
 from ._api import register_model
 
-__all__ = ["NeighborViT"]
+__all__ = ["AxialViT"]
 
-@register_model("neighbor_vit")
-class NeighborViT(nn.Module):
+@register_model("axial_vit")
+class AxialViT(nn.Module):
     def __init__(
         self,
         input_fields: int = 3,
@@ -49,7 +49,7 @@ class NeighborViT(nn.Module):
         self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
 
         self.blocks = nn.ModuleList([
-            TransformerNeighborBlock(
+            TransformerAxialBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
             )
@@ -120,6 +120,6 @@ class NeighborViT(nn.Module):
         x = torch.cat((sdf, temp, vel), dim=2)
         
         # Skip connection from the last timestep of the original input
-        x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)
+        x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)        
         
         return x

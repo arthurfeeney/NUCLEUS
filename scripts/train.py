@@ -17,7 +17,7 @@ from lightning.pytorch.plugins.environments import SLURMEnvironment
 
 from bubbleformer.data.batching import collate
 from bubbleformer.data import BubbleForecast, DownsampledBubbleForecast
-from bubbleformer.modules import MoEConditionedForecastModule
+from bubbleformer.modules import get_train_module
 from bubbleformer.utils.set_fp32_precision import set_fp32_precision
 
 def is_leader_process():
@@ -136,7 +136,7 @@ def main(cfg: DictConfig) -> None:
         collate_fn=collate,
     )
     
-    train_module = MoEConditionedForecastModule(
+    train_module = get_train_module(cfg.model_cfg.train_module_name)(
         model_cfg=cfg.model_cfg,
         data_cfg=cfg.data_cfg,
         optim_cfg=cfg.optim_cfg,

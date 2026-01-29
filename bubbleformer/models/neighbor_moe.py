@@ -9,7 +9,7 @@ from bubbleformer.layers import (
     HMLPEmbed, 
     HMLPDebed,
     FiLMMLP,
-    TransformerMoEBlock
+    TransformerNeighborMoEBlock
 )
 from ._api import register_model
 
@@ -41,7 +41,7 @@ class NeighborMoE(nn.Module):
         self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
         
         self.blocks = nn.ModuleList([
-            TransformerMoEBlock(
+            TransformerNeighborMoEBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 num_experts=num_experts,

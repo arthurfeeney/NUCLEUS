@@ -1,16 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 import einops
 from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
 
-import natten
-
-class SpatialNeighborhoodAttention(nn.Module):
-    r"""
-    This is similar to natten's NaighborhoodAttention2D,
-    but includes additional query and key normalization.
-    """
+class SpatialAttention(nn.Module):
     def __init__(
         self,
         embed_dim,
@@ -50,22 +45,19 @@ class SpatialNeighborhoodAttention(nn.Module):
         q = apply_rotary_emb(freqs, q)
         k = apply_rotary_emb(freqs, k)
         
-        # natten expects head-last [batch, seq1, seq2, heads, dim] layout
+        # SPDA expects sequence to be flattened [batch, heads, seq1 * seq2, dim] layout
         q, k, v = map(
-            lambda qkv: rearrange(qkv, "bt heads h w head_dim -> bt h w heads head_dim").contiguous(), [q, k, v]
+            lambda qkv: rearrange(qkv, "bt heads h w head_dim -> bt heads (h w) head_dim").contiguous(), [q, k, v]
         )
         
-        output = natten.na2d(
-            q,
-            k,
-            v,
-            kernel_size=5,
-            stride=1,
-            dilation=1,   
+        output = F.scaled_dot_product_attention(
+            query=q,
+            key=k,
+            value=v
         )
         
         output = einops.rearrange(output,
-                                  "(b t) h w heads head_dim -> b t h w (heads head_dim)", 
-                                  b=b, t=t).contiguous()
+                                  "(b t) heads (h w) head_dim -> b t h w (heads head_dim)", 
+                                  b=b, t=t, h=h, w=w, heads=self.num_heads).contiguous()
         output = self.output_head(output).to(torch.float32)
         return output

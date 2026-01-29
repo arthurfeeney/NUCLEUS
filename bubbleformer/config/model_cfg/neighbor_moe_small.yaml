@@ -1,4 +1,5 @@
 name: neighbor_moe
+train_module_name: moe_conditioned_forecast
 params:
   patch_size: 4
   embed_dim: 384

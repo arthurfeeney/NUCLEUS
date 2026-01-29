@@ -4,6 +4,7 @@ from typing import Tuple, Optional, List
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
+from collections import OrderedDict
 import torch
 from torch.optim import AdamW, Adam
 from lion_pytorch import Lion
@@ -304,7 +305,19 @@ class ConditionedForecastModule(ForecastModule):
         batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt, cond = batch
+        inp, tgt, cond = batch.input, batch.target, batch.fluid_params_tensor
+
+        # The input is [B, T, C, H, W]
+        # Randomly flip along the horizontal axis of the input and target.
+        if random.random() < 0.5:
+            inp = torch.fliplr(inp)
+            tgt = torch.fliplr(tgt)
+
+        # Add gaussian noise to the input
+        if random.random() < 0.4:
+            scale = random.choice([0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1])
+            inp = inp + torch.normal(0, scale, inp.shape, device=inp.device)
+
         pred = self.model(inp, cond)
         loss = self.criterion(pred, tgt)
         
@@ -320,7 +333,7 @@ class ConditionedForecastModule(ForecastModule):
         batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt, cond = batch
+        inp, tgt, cond = batch.input, batch.target, batch.fluid_params_tensor
         pred = self.model(inp, cond)
         loss = self.criterion(pred, tgt)
         if batch_idx == 0:
@@ -396,3 +409,13 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         self.default_log_dict({"val_loss": loss})
     
         return loss
+    
+def get_train_module(module_name: str):
+    if module_name == "forecast":
+        return ForecastModule
+    elif module_name == "conditioned_forecast":
+        return ConditionedForecastModule
+    elif module_name == "moe_conditioned_forecast":
+        return MoEConditionedForecastModule
+    else:
+        raise ValueError(f"Module {module_name} not supported")
