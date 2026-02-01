@@ -64,6 +64,55 @@ def plot_vorticity(ax, vorticity: torch.Tensor, min_vort=None, max_vort=None, ti
     ax_default(ax, title)
     return im
 
+def plot_rollout_stability(save_dir: str, pred_rollout: torch.Tensor, target_rollout: torch.Tensor):
+    sdf = pred_rollout[:, 0, :, :]
+    temp = pred_rollout[:, 1, :, :]
+    velx = pred_rollout[:, 2, :, :]
+    vely = pred_rollout[:, 3, :, :]
+    target_sdf = target_rollout[:, 0, :, :]
+    target_temp = target_rollout[:, 1, :, :]
+    target_velx = target_rollout[:, 2, :, :]
+    target_vely = target_rollout[:, 3, :, :]
+    
+    # Rollout stability of predicted and target rollouts (i.e. the norm of the differences between consecutive timesteps)
+    fig, axs = plt.subplots(1, 4, figsize=(10, 5), layout="constrained")
+    
+    sdf_steps = torch.norm(sdf[1:] - sdf[:-1], dim=(-2, -1))
+    temp_steps = torch.norm(temp[1:] - temp[:-1], dim=(-2, -1))
+    velx_steps = torch.norm(velx[1:] - velx[:-1], dim=(-2, -1))
+    vely_steps = torch.norm(vely[1:] - vely[:-1], dim=(-2, -1))
+    
+    target_sdf_steps = torch.norm(target_sdf[1:] - target_sdf[:-1], dim=(-2, -1))
+    target_temp_steps = torch.norm(target_temp[1:] - target_temp[:-1], dim=(-2, -1))
+    target_velx_steps = torch.norm(target_velx[1:] - target_velx[:-1], dim=(-2, -1))
+    target_vely_steps = torch.norm(target_vely[1:] - target_vely[:-1], dim=(-2, -1))
+    
+    print(sdf_steps.shape, target_sdf_steps.shape)
+
+    axs[0].plot(sdf_steps, label="Predicted")
+    axs[0].plot(target_sdf_steps, label="Target")
+    axs[1].plot(temp_steps, label="Predicted")
+    axs[1].plot(target_temp_steps, label="Target")
+    axs[2].plot(velx_steps, label="Predicted")
+    axs[2].plot(target_velx_steps, label="Target")
+    axs[3].plot(vely_steps, label="Predicted")
+    axs[3].plot(target_vely_steps, label="Target")
+    axs[0].legend()
+    axs[1].legend()
+    axs[2].legend()
+    axs[3].legend()
+    axs[0].set_title("SDF")
+    axs[1].set_title("Temperature")
+    axs[2].set_title("Velocity X")
+    axs[3].set_title("Velocity Y")
+    axs[0].set_xlabel("Time")
+    axs[1].set_xlabel("Time")
+    axs[2].set_xlabel("Time")
+    axs[3].set_xlabel("Time")
+    axs[0].set_ylabel("||r_t - r_{t-1}||_2")
+    plt.savefig(f"{save_dir}/stability.png")
+    plt.close()
+
 def plot_rollout(
     save_dir: str,
     rollout: torch.Tensor,
@@ -102,7 +151,7 @@ def plot_rollout(
         
         plt.savefig(f"{save_dir}/rollout_{str(timestep).zfill(4)}.png")
         plt.close()
-        
+
 if __name__ == "__main__":
     import h5py
     import numpy as np
@@ -117,13 +166,17 @@ if __name__ == "__main__":
     v = vorticity(velx, vely, 1/32, 1/32)
 
     timestep = 400
-    fig, axs = plt.subplots(2, 2, figsize=(10, 10), layout="constrained")
-    t = plot_sdf(axs[0, 0], torch.flipud(sdf[timestep]))
-    plt.colorbar(t, ax=axs[0, 0], ticks=[-8, -4, 0, 0.1, 0.4], fraction=0.05, pad=0.05)
-    t = plot_temp(axs[0, 1], torch.flipud(temp[timestep]), 50, 97)
-    plt.colorbar(t, ax=axs[0, 1], fraction=0.05, pad=0.05)
-    t = plot_vel_mag(axs[1, 0], torch.flipud(vel_mag[timestep]))
-    plt.colorbar(t, ax=axs[1, 0], fraction=0.05, pad=0.05)
-    t = plot_vorticity(axs[1, 1], torch.flipud(v[timestep]))
-    plt.colorbar(t, ax=axs[1, 1], fraction=0.05, pad=0.05)
-    plt.savefig("test.png")
+    fig, axs = plt.subplots(1, 4, figsize=(10, 3), layout="constrained")
+    t = plot_sdf(axs[0], torch.flipud(sdf[timestep]))
+    axs[0].set_title("SDF to Bubble Interface")
+    plt.colorbar(t, ax=axs[0], ticks=[-8, -4, 0, 0.1, 0.4], fraction=0.05, pad=0.05)
+    t = plot_temp(axs[1], torch.flipud(temp[timestep]), 50, 97)
+    axs[1].set_title("Temperature")
+    plt.colorbar(t, ax=axs[1], fraction=0.05, pad=0.05)
+    t = plot_vel_mag(axs[2], torch.flipud(vel_mag[timestep]))
+    axs[2].set_title("Velocity Magnitude")
+    plt.colorbar(t, ax=axs[2], fraction=0.05, pad=0.05)
+    t = plot_vorticity(axs[3], torch.flipud(v[timestep]))
+    axs[3].set_title("Vorticity")
+    plt.colorbar(t, ax=axs[3], ticks=[-10, 0, 10], fraction=0.05, pad=0.05)
+    plt.savefig("test.pdf", bbox_inches="tight")
