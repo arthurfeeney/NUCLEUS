@@ -1,4 +1,4 @@
 name: adamw
 params:
-  lr: 1e-3
+  lr: 5e-4
   weight_decay: 1.0e-2
