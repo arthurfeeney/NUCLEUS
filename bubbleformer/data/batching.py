@@ -11,9 +11,22 @@ class Data:
     fluid_params_dict: Dict
     x_grid: torch.Tensor
     y_grid: torch.Tensor
-    dx: torch.Tensor
-    dy: torch.Tensor
+    dx: float
+    dy: float
     rollout_steps: Optional[int] = None
+    
+    def to_collated_batch(self):
+        return CollatedBatch(
+            input=self.input.unsqueeze(0),
+            target=self.target.unsqueeze(0) if self.target is not None else None,
+            fluid_params_tensor=self.fluid_params_tensor.unsqueeze(0),
+            fluid_params_dict=[self.fluid_params_dict],
+            x_grid=self.x_grid.unsqueeze(0),
+            y_grid=self.y_grid.unsqueeze(0),
+            dx=torch.tensor([self.dx]),
+            dy=torch.tensor([self.dy]),
+            rollout_steps=torch.tensor([self.rollout_steps]) if self.rollout_steps is not None else None
+        )
 
 @dataclasses.dataclass
 class CollatedBatch:
@@ -80,9 +93,19 @@ class CollatedBatch:
             rollout_steps=self.rollout_steps
         )
         
-    def gaussian_noise(self, scale: float):
+    def gaussian_noise(self, sdf_scale: float, temp_scale: float, vel_scale: float):
+        sdf_noise = torch.normal(0, sdf_scale, self.input[:, :, 0, :, :].shape, device=self.input.device)
+        temp_noise = torch.normal(0, temp_scale, self.input[:, :, 1, :, :].shape, device=self.input.device)
+        velx_noise = torch.normal(0, vel_scale, self.input[:, :, 2, :, :].shape, device=self.input.device)
+        vely_noise = torch.normal(0, vel_scale, self.input[:, :, 3, :, :].shape, device=self.input.device)
+        noisy_input = torch.stack([
+            self.input[:, :, 0, :, :] + sdf_noise,
+            self.input[:, :, 1, :, :] + temp_noise,
+            self.input[:, :, 2, :, :] + velx_noise,
+            self.input[:, :, 3, :, :] + vely_noise,
+        ], dim=2)
         return CollatedBatch(
-            input=self.input + torch.normal(0, scale, self.input.shape, device=self.input.device),
+            input=noisy_input,
             target=self.target,
             fluid_params_tensor=self.fluid_params_tensor,
             fluid_params_dict=self.fluid_params_dict,

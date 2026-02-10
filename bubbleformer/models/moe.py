@@ -16,14 +16,13 @@ from bubbleformer.layers import (
 from bubbleformer.data.batching import CollatedBatch
 from ._api import register_model
 
-__all__ = ["ViTMoE"]
+__all__ = ["ViTMoE", "AxialMoE", "NeighborMoE"]
 
 class MoEBase(nn.Module):
     def __init__(
         self,
         input_fields: int,
         output_fields: int,
-        time_window: int,
         patch_size: int,
         embed_dim: int,
         num_heads: int,
@@ -122,8 +121,8 @@ class MoEBase(nn.Module):
         vel = rearrange(vel, "(b t) c h w -> b t c h w", b=B, t=T)
         x = torch.cat((sdf, temp, vel), dim=2)
         
-        # Skip connection from the last timestep of the original input
-        x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)
+        # Skip connection from the input
+        x = x + input
         
         return x, moe_outputs
     
@@ -133,7 +132,6 @@ class ViTMoE(MoEBase):
         self,
         input_fields: int,
         output_fields: int,
-        time_window: int,
         patch_size: int,
         embed_dim: int,
         num_heads: int,
@@ -146,7 +144,6 @@ class ViTMoE(MoEBase):
         super().__init__(
             input_fields=input_fields,
             output_fields=output_fields,
-            time_window=time_window,
             patch_size=patch_size,
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -163,7 +160,6 @@ class AxialMoE(MoEBase):
         self,
         input_fields: int,
         output_fields: int,
-        time_window: int,
         patch_size: int,
         embed_dim: int,
         num_heads: int,
@@ -176,7 +172,6 @@ class AxialMoE(MoEBase):
         super().__init__(
             input_fields=input_fields,
             output_fields=output_fields,
-            time_window=time_window,
             patch_size=patch_size,
             embed_dim=embed_dim,
             num_heads=num_heads,
@@ -203,7 +198,6 @@ class NeighborMoE(MoEBase):
         self,
         input_fields: int,
         output_fields: int,
-        time_window: int,
         patch_size: int,
         embed_dim: int,
         num_heads: int,
@@ -216,7 +210,6 @@ class NeighborMoE(MoEBase):
         super().__init__(
             input_fields=input_fields,
             output_fields=output_fields,
-            time_window=time_window,
             patch_size=patch_size,
             embed_dim=embed_dim,
             num_heads=num_heads,

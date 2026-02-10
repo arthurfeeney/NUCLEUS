@@ -6,6 +6,8 @@ from .attention import (
     SpatialAxialAttention,
     SpatialNeighborhoodAttention,
     TemporalAttention,
+    BubbleformerAttentionBlock,
+    BubbleformerAxialAttentionBlock,
 )
 from .transformer_block import (
     TransformerBlock, 

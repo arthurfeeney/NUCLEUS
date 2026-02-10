@@ -8,6 +8,9 @@ import dataclasses
 from typing import List
 from bubbleformer.utils.interp import upsample, downsample
 
+def bubble_metrics_mae(pred, target):
+    pass
+
 @dataclasses.dataclass
 class BubbleMetrics:
     bubble_labels: torch.Tensor # (B, T, H, W)
@@ -17,12 +20,13 @@ class BubbleMetrics:
     bubble_y_velocity: List[List[List[float]]] # (B, T, num_bubbles)
 
 def bubble_metrics(sdf, velx, vely, dx, dy):
+    bubble_labels = find_bubbles(sdf)   
     return BubbleMetrics(
-        bubble_labels=find_bubbles(sdf),
-        bubble_count=bubble_count(sdf),
-        bubble_volume=bubble_volume(sdf, dx, dy),
-        bubble_x_velocity=bubble_velocity(sdf, velx, dx, dy),
-        bubble_y_velocity=bubble_velocity(sdf, vely, dx, dy)
+        bubble_labels=bubble_labels,
+        bubble_count=bubble_count(sdf, bubble_labels),
+        bubble_volume=bubble_volume(sdf, bubble_labels, dx, dy),
+        bubble_x_velocity=bubble_velocity(sdf, velx, bubble_labels, dx, dy),
+        bubble_y_velocity=bubble_velocity(sdf, vely, bubble_labels, dx, dy)
     )
 
 @dataclasses.dataclass
@@ -37,6 +41,10 @@ class PhysicalMetrics:
 
     vapor_volume: torch.Tensor # (B, T)
     vapor_volume_at_height: torch.Tensor # (B, T, H)
+    
+    temperature_distribution: torch.Tensor # (B, num_bins)
+    velx_distribution: torch.Tensor # (B, num_bins)
+    vely_distribution: torch.Tensor # (B, num_bins)
 
     mean_liquid_x_velocity: torch.Tensor # (B, T)
     mean_liquid_y_velocity: torch.Tensor # (B, T)
@@ -52,6 +60,8 @@ def physical_metrics(
     vely,
     heater_min,
     heater_max,
+    bulk_temp,
+    heater_temp,
     xcoords,
     dx,
     dy=None,
@@ -70,6 +80,9 @@ def physical_metrics(
         liquid_temperature_at_heater=liquid_temperature_at_heater(temperature, sdf, heater_min, heater_max, xcoords),
         vapor_volume=vapor_volume(sdf, dx, dy),
         vapor_volume_at_height=vapor_volume_at_height(sdf, dx, dy),
+        temperature_distribution=temperature_distribution(temperature, bulk_temp, heater_temp),
+        velx_distribution=velocity_distribution(velx),
+        vely_distribution=velocity_distribution(vely),
         mean_liquid_x_velocity=liquid_x_velocity,
         mean_liquid_y_velocity=liquid_y_velocity,
         mean_vapor_x_velocity=vapor_x_velocity,
@@ -111,11 +124,11 @@ def interface_mask(sdf):
     [B, T, rows, cols] = sdf.shape
     for b in range(B):
         for t in range(T):
-            for i in range(rows):
-                for j in range(cols):
-                    nbr = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                    sign_change = any(sdf[b, t, i+di, j+dj] * sdf[b, t, i, j] <= 0 for di, dj in nbr if 0 <= i+di < rows and 0 <= j+dj < cols)
-                    interface[b, t, i, j] = sign_change
+            signs = np.sign(sdf[b, t])
+            interface[b, t, :-1, :] |= signs[:-1, :] != signs[1:, :]
+            interface[b, t, 1:, :] |= signs[1:, :] != signs[:-1, :]
+            interface[b, t, :, :-1] |= signs[:, :-1] != signs[:, 1:]
+            interface[b, t, :, 1:] |= signs[:, 1:] != signs[:, :-1]
     return interface.to(sdf.device)
 
 def interface_velocity(velx, vely, sdf):
@@ -167,6 +180,16 @@ def vapor_volume_at_height(sdf, dx, dy):
     vapor_volume = torch.sum(vapor_mask, dim=(-1)) * dx
     return vapor_volume
 
+def temperature_distribution(temperature, bulk_temp, heater_temp):
+    assert temperature.dim() >= 2, "Temperature must be of shape (..., H, W)"
+    dist = torch.histogram(temperature, bins=int(4 * (heater_temp - bulk_temp) + 1), range=(bulk_temp, heater_temp), density=True)
+    return dist
+
+def velocity_distribution(velocity):
+    assert velocity.dim() >= 2, "Velocity must be of shape (..., H, W)"
+    dist = torch.histogram(velocity, bins=100, density=True)
+    return dist
+    
 def liquid_temperature(temperature, sdf):
     assert temperature.dim() >= 2 and sdf.dim() >= 2, "Temperature and SDF must be of shape (..., H, W)"
     assert temperature.shape == sdf.shape, "Temperature and SDF must have the same shape"
@@ -203,8 +226,7 @@ def find_bubbles(sdf):
             bubble_labels[b, t] = find_bubbles_at_timestep(sdf[b, t])
     return bubble_labels
 
-def bubble_count(sdf):
-    bubble_labels = find_bubbles(sdf)
+def bubble_count(sdf, bubble_labels):
     assert bubble_labels.dim() == 4, "Bubble labels must be of shape (B, T, H, W)"
     
     bubble_counts = []
@@ -221,8 +243,7 @@ def bubble_count(sdf):
     
     return torch.tensor(bubble_counts, dtype=torch.int32, device=sdf.device)
 
-def bubble_volume(sdf, dx, dy):
-    bubble_labels = find_bubbles(sdf)
+def bubble_volume(sdf, bubble_labels, dx, dy):
     bubble_volumes = []
     for b in range(sdf.shape[0]):
         bubble_volumes_at_batch = []
@@ -244,8 +265,7 @@ def bubble_volume(sdf, dx, dy):
     # the number of bubbles per timestep and batch is variable.
     return bubble_volumes
 
-def bubble_velocity(sdf, vel, dx, dy):
-    bubble_labels = find_bubbles(sdf)
+def bubble_velocity(sdf, vel, bubble_labels, dx, dy):
     bubble_velocities = []
     for b in range(sdf.shape[0]):
         bubble_velocities_at_batch = []

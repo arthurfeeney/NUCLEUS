@@ -15,12 +15,14 @@ class BubbleForecast(Dataset):
     def __init__(
         self,
         filenames: List[str],
-        input_fields: Optional[List[str]] = None,
-        output_fields: Optional[List[str]] = None,
+        input_fields: Optional[List[str]],
+        output_fields: Optional[List[str]],
+        future_time_window: int,
+        history_time_window: int,
+        time_step: int,
+        start_time: int,
         norm: str = "none",
         downsample_factor: int = 1,
-        time_window: int = 16,
-        start_time: int = 50,
         return_fluid_params: bool = False,
     ):
         super().__init__()
@@ -35,8 +37,12 @@ class BubbleForecast(Dataset):
             self.output_fields = ["dfun", "temperature", "velx", "vely"]
         self.norm = norm
         self.downsample_factor = downsample_factor
-        self.time_window = time_window
+        #self.time_window = time_window
+        self.future_time_window = future_time_window
+        self.history_time_window = history_time_window
+        self.time_step = time_step
         self.start_time = start_time
+        
         self.data = [h5.File(filename, "r") for filename in filenames]
         self.num_trajs = []
         self.traj_lens = []
@@ -60,15 +66,18 @@ class BubbleForecast(Dataset):
                     fluid_params = json.load(f)
                 self.fluid_params.append(fluid_params)
 
+    def _get_traj_len(self, traj_len: int) -> int:
+        return traj_len - self.start_time - self.future_time_window - self.history_time_window + 1
+
     def __len__(self):
         total_len = 0
         for (num_traj, traj_len) in zip(self.num_trajs, self.traj_lens):
-            total_len += num_traj * (traj_len - self.start_time - 2 * self.time_window + 1)
+            total_len += num_traj * self._get_traj_len(traj_len)
         return total_len
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
         samples_per_traj = [
-            x * (y - self.start_time - 2 * self.time_window + 1)
+            x * self._get_traj_len(y)
             for x, y in zip(self.num_trajs, self.traj_lens)
         ]
 
@@ -76,9 +85,12 @@ class BubbleForecast(Dataset):
         file_idx = np.searchsorted(cumulative_samples, idx, side="right")
         start = idx + self.start_time - (cumulative_samples[file_idx - 1] if file_idx > 0 else 0)
 
-        inp_slice = slice(start, start + self.time_window)
-        out_slice = slice(start + self.time_window, start + 2 * self.time_window)
-
+        inp_slice = slice(start, start + self.history_time_window, self.time_step)
+        out_slice = slice(
+            start + self.history_time_window, 
+            start + self.history_time_window + self.future_time_window, 
+            self.time_step
+        )
         inp_data = []
         out_data = []
 
@@ -90,7 +102,7 @@ class BubbleForecast(Dataset):
                 data_item = F.interpolate(
                     data_item.unsqueeze(1),
                     size=(new_h, new_w),
-                    mode="nearest"
+                    mode="bilinear"
                 ).squeeze(1)
                 
             inp_data.append(data_item)
@@ -102,7 +114,7 @@ class BubbleForecast(Dataset):
                 data_item = F.interpolate(
                     data_item.unsqueeze(1),
                     size=(new_h, new_w),
-                    mode="nearest"
+                    mode="bilinear"
                 ).squeeze(1)
             out_data.append(data_item)
 

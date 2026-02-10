@@ -79,40 +79,48 @@ def main(cfg: DictConfig) -> None:
     params["optim_cfg"] =  cfg.optim_cfg
     params["scheduler_cfg"] =  cfg.scheduler_cfg
 
-    if params["checkpoint_path"] is None:
-        log_id = (
-            cfg.model_cfg.name.lower() + "_"
-            + cfg.data_cfg.dataset.lower() + "_"
-            + os.getenv("SLURM_JOB_ID")
-        )
-        params["log_dir"] = os.path.join(cfg.log_dir, log_id)
-        os.makedirs(params["log_dir"], exist_ok=True)
-        preempt_ckpt_path = params["log_dir"] + "/hpc_ckpt_1.ckpt"
-    else:
-        log_id = cfg.checkpoint_path.split("/")[-2]
-        params["log_dir"] = "/".join(cfg.checkpoint_path.split("/")[:-1])
-        preempt_ckpt_num = int(cfg.checkpoint_path.split("_")[-1][:-5]) + 1
-        preempt_ckpt_path = params["log_dir"] + "/hpc_ckpt_" + str(preempt_ckpt_num) + ".ckpt"
+    #if params["checkpoint_path"] is None:
+    log_id = (
+        cfg.model_cfg.name.lower() + "_"
+        + cfg.data_cfg.dataset.lower() + "_"
+        + os.getenv("SLURM_JOB_ID")
+    )
+    params["log_dir"] = os.path.join(cfg.log_dir, log_id)
+    os.makedirs(params["log_dir"], exist_ok=True)
+    preempt_ckpt_path = params["log_dir"] + "/hpc_ckpt_1.ckpt"
+    #else:
+    #    log_id = cfg.checkpoint_path.split("/")[-2]
+    #    params["log_dir"] = "/".join(cfg.checkpoint_path.split("/")[:-1])
+    #    preempt_ckpt_num = int(cfg.checkpoint_path.split("_")[-1][:-5]) + 1
+    #    preempt_ckpt_path = params["log_dir"] + "/hpc_ckpt_" + str(preempt_ckpt_num) + ".ckpt"  
 
     logger = CSVLogger(save_dir=params["log_dir"])
     
-    train_dataset = DownsampledBubbleForecast(
+    dataset = DownsampledBubbleForecast if "64" in cfg.data_cfg.dataset else BubbleForecast
+    
+    train_dataset = dataset(
                 filenames=cfg.data_cfg.train_paths,
                 input_fields=cfg.data_cfg.input_fields,
                 output_fields=cfg.data_cfg.output_fields,
                 norm=cfg.data_cfg.normalize,
                 downsample_factor=cfg.data_cfg.downsample_factor,
-                time_window=cfg.data_cfg.time_window,
+                #time_window=cfg.data_cfg.time_window,
+                history_time_window=cfg.data_cfg.history_time_window,
+                future_time_window=cfg.data_cfg.future_time_window,
+                time_step=cfg.data_cfg.time_step,
                 start_time=cfg.data_cfg.start_time,
                 return_fluid_params=cfg.data_cfg.return_fluid_params,
             )
-    val_dataset = DownsampledBubbleForecast(
+    val_dataset = dataset(
                 filenames=cfg.data_cfg.val_paths,
                 input_fields=cfg.data_cfg.input_fields,
                 output_fields=cfg.data_cfg.output_fields,
                 norm=cfg.data_cfg.normalize,
                 downsample_factor=cfg.data_cfg.downsample_factor,
-                time_window=cfg.data_cfg.time_window,
+                #time_window=cfg.data_cfg.time_window,
+                history_time_window=cfg.data_cfg.history_time_window,
+                future_time_window=cfg.data_cfg.future_time_window,
+                time_step=cfg.data_cfg.time_step,
                 start_time=cfg.data_cfg.start_time,
                 return_fluid_params=cfg.data_cfg.return_fluid_params,
             )
@@ -137,6 +145,7 @@ def main(cfg: DictConfig) -> None:
     )
     
     train_module = get_train_module(cfg.model_cfg.train_module_name)(
+        checkpoint_path=cfg.checkpoint_path,
         model_cfg=cfg.model_cfg,
         data_cfg=cfg.data_cfg,
         optim_cfg=cfg.optim_cfg,
@@ -165,7 +174,7 @@ def main(cfg: DictConfig) -> None:
         num_nodes=cfg.nodes,
         strategy="auto",
         max_epochs=cfg.max_epochs,
-        accumulate_grad_batches=8,
+        accumulate_grad_batches=cfg.accumulate_grad_batches,
         logger=logger,
         default_root_dir=params["log_dir"],
         plugins=[SLURMEnvironment(requeue_signal=signal.SIGHUP)],
@@ -174,7 +183,7 @@ def main(cfg: DictConfig) -> None:
         gradient_clip_val=1.0,
         callbacks=[
             ModelSummary(max_depth=-1), 
-            PreemptionCheckpointCallback(preempt_ckpt_path),
+            #PreemptionCheckpointCallback(preempt_ckpt_path),
             ModelCheckpoint(
                 dirpath=params["log_dir"] + "/checkpoints",
                 monitor="val_loss",

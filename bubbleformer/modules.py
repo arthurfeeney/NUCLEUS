@@ -14,7 +14,7 @@ import lightning as L
 
 from bubbleformer.data.batching import CollatedBatch
 from bubbleformer.models import get_model
-from bubbleformer.utils.losses import LpLoss, L1Loss, L1RelativeLoss
+from bubbleformer.utils.losses import L1RelativeLoss
 from bubbleformer.utils.lr_schedulers import CosineWarmupLR
 from bubbleformer.utils.plot_utils import wandb_sdf_plotter, wandb_temp_plotter, wandb_vel_plotter
 
@@ -33,6 +33,7 @@ class ForecastModule(L.LightningModule):
     """
     def __init__(
         self,
+        checkpoint_path: Optional[str],
         model_cfg: DictConfig,
         data_cfg: DictConfig,
         optim_cfg: DictConfig,
@@ -44,6 +45,7 @@ class ForecastModule(L.LightningModule):
         # whole model config to be saved to the checkpoint
         self.save_hyperparameters()
         
+        self.checkpoint_path = checkpoint_path
         self.model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
         self.data_cfg = OmegaConf.to_container(data_cfg, resolve=True)
         self.optimizer_cfg = OmegaConf.to_container(optim_cfg, resolve=True)
@@ -56,9 +58,15 @@ class ForecastModule(L.LightningModule):
         
         self.model_cfg["params"]["input_fields"] = len(self.data_cfg["input_fields"])
         self.model_cfg["params"]["output_fields"] = len(self.data_cfg["output_fields"])
-        self.model_cfg["params"]["time_window"] = self.data_cfg["time_window"]
         self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
-        #self.model = torch.compile(self.model)
+        if self.checkpoint_path is not None:
+            model_data = torch.load(self.checkpoint_path, weights_only=False)
+            weight_state_dict = OrderedDict()
+            for key, val in model_data["state_dict"].items():
+                #name = key[6:]
+                weight_state_dict[key] = val
+            del model_data
+            self.load_state_dict(weight_state_dict)
 
         self.save_hyperparameters()
         self.t_max = None
@@ -278,6 +286,7 @@ class ConditionedForecastModule(ForecastModule):
     """
     def __init__(
         self,
+        checkpoint_path: str,
         model_cfg: DictConfig,
         data_cfg: DictConfig,
         optim_cfg: DictConfig,
@@ -286,6 +295,7 @@ class ConditionedForecastModule(ForecastModule):
         normalization_constants: Tuple[List, List] = None
     ):
         super().__init__(
+            checkpoint_path=checkpoint_path,
             model_cfg=model_cfg,
             data_cfg=data_cfg,
             optim_cfg=optim_cfg,
@@ -293,13 +303,6 @@ class ConditionedForecastModule(ForecastModule):
             log_wandb=log_wandb,
             normalization_constants=normalization_constants
         )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        cond: torch.Tensor
-    ) -> torch.Tensor:
-        return self.model(x, cond)
 
     def training_step(
         self,
@@ -309,13 +312,16 @@ class ConditionedForecastModule(ForecastModule):
         
         if random.random() < 0.5:
             batch = batch.fliplr()
-        if random.random() < 0.4:
-            scale = random.choice(torch.linspace(0.0001, 0.1, 500).tolist())
-            batch = batch.gaussian_noise(scale)
+        if random.random() < 0.8:
+            sdf_scale = random.choice(torch.linspace(0.001, 1, 500).tolist())
+            temp_scale = random.choice(torch.linspace(0.001, 5, 500).tolist())
+            vel_scale = random.choice(torch.linspace(0.001, 0.3, 500).tolist())
+            batch = batch.gaussian_noise(sdf_scale, temp_scale, vel_scale)
 
         inp = batch.get_input()
         pred = self.model(inp)
-        loss = self.criterion(pred, batch.target)
+        bulk_temp, _ = batch.get_temps()
+        loss = self.criterion(pred, batch.target, bulk_temp)
         
         self.default_log_dict({
             "train_loss": loss,
@@ -331,7 +337,8 @@ class ConditionedForecastModule(ForecastModule):
     ) -> torch.Tensor:
         inp = batch.get_input()
         pred = self.model(inp)
-        loss = self.criterion(pred, batch.target)
+        bulk_temp, _ = batch.get_temps()
+        loss = self.criterion(pred, batch.target, bulk_temp)
         if batch_idx == 0:
             self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
 
@@ -342,6 +349,7 @@ class ConditionedForecastModule(ForecastModule):
 class MoEConditionedForecastModule(ConditionedForecastModule):
     def __init__(
         self,
+        checkpoint_path: str,
         model_cfg: DictConfig,
         data_cfg: DictConfig,
         optim_cfg: DictConfig,
@@ -350,6 +358,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         normalization_constants: Tuple[List, List] = None
     ):
         super().__init__(
+            checkpoint_path=checkpoint_path,
             model_cfg=model_cfg,
             data_cfg=data_cfg,
             optim_cfg=optim_cfg,
@@ -366,14 +375,17 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         
         if random.random() < 0.5:
             batch = batch.fliplr()
-        if random.random() < 0.4:
-            scale = random.choice(torch.linspace(0.0001, 0.1, 500).tolist())
-            batch = batch.gaussian_noise(scale)
+        if random.random() < 0.8:
+            sdf_scale = random.choice(torch.linspace(0.001, 1, 500).tolist())
+            temp_scale = random.choice(torch.linspace(0.001, 5, 500).tolist())
+            vel_scale = random.choice(torch.linspace(0.001, 0.3, 500).tolist())
+            batch = batch.gaussian_noise(sdf_scale, temp_scale, vel_scale)
 
         inp = batch.get_input()
         pred, moe_outputs = self.model(inp)
 
-        data_loss = self.criterion(pred, batch.target)
+        bulk_temp, _ = batch.get_temps()
+        data_loss = self.criterion(pred, batch.target, bulk_temp)
         routing_loss = sum(moe_output.load_balance_loss for moe_output in moe_outputs)
         loss = data_loss + routing_loss
 
@@ -393,7 +405,8 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
     ) -> torch.Tensor:
         inp = batch.get_input()
         pred, moe_outputs = self.model(inp)
-        loss = self.criterion(pred, batch.target)
+        bulk_temp, _ = batch.get_temps()
+        loss = self.criterion(pred, batch.target, bulk_temp)
         if batch_idx == 0:
             self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
 

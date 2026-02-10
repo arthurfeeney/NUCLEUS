@@ -6,6 +6,7 @@ devices: 1
 
 max_epochs: 40
 batch_size: 16
+accumulate_grad_batches: 1
 
 checkpoint_path:
 
@@ -17,6 +18,6 @@ wandb_tags:
 defaults:
   - _self_
   - data_cfg: poolboiling64
-  - model_cfg: neighbor_moe_fluid_embed1
+  - model_cfg: neighbor_moe1
   - optim_cfg: adamw
   - scheduler_cfg: cosine_warmup

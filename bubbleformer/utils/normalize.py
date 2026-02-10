@@ -3,19 +3,21 @@ import torch
 def normalize_temp(temp: torch.Tensor, bulk_temp: torch.Tensor, heater_temp: torch.Tensor) -> torch.Tensor:
     assert (heater_temp > bulk_temp).all(), "Heater temperature must be greater than bulk temperature"
     
+    normalized_temp = (temp - bulk_temp) / (heater_temp - bulk_temp)
+    
+    normalized_temp * (heater_temp - bulk_temp) + bulk_temp
+    
+    
+    
     bulk_temp = bulk_temp[:, None, None, None]
     heater_temp = heater_temp[:, None, None, None]
-    
     temp = torch.clip(temp, min=bulk_temp, max=heater_temp)
-
-    # map temperature range to [0, 1] based on heater and bulk temperature
-    return ((temp - bulk_temp) / (heater_temp - bulk_temp))
+    # map temperature range to [0, heater_temp - bulk_temp] based on heater and bulk temperature
+    return temp - bulk_temp
 
 def unnormalize_temp(temp: torch.Tensor, bulk_temp: torch.Tensor, heater_temp: torch.Tensor) -> torch.Tensor:
     bulk_temp = bulk_temp[:, None, None, None]
-    heater_temp = heater_temp[:, None, None, None]
-    # map [0, 1] to temperature range based on heater and bulk temperature
-    return temp * (heater_temp - bulk_temp) + bulk_temp
+    return temp + bulk_temp
 
 def normalize_sdf(sdf: torch.Tensor) -> torch.Tensor:
     # the pool boiling domain is 16x16, so this is approximately normalizing to [-1, 1]

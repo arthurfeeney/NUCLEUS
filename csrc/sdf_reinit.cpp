@@ -36,10 +36,10 @@ double solve_eikonal(
     auto status_a = status.accessor<int, 2>();
     
     double phi_val = phi_a[i][j];
-    double phi_init_val = phi_init_a[i][j];
+    //double phi_init_val = phi_init_a[i][j];
 
     // sign is determined using the original SDF, not the "in progress" SDF
-    int sign = (phi_init_val >= 0) ? 1 : -1;
+    int sign = (phi_val > 0) ? 1 : ((phi_val < 0) ? -1 : 0);
     
     // Get upwind values in y-direction
     std::vector<double> phi_x;
@@ -89,7 +89,7 @@ double solve_eikonal(
             // Full 2D solve
             double phi_new = (a + b + sign * std::sqrt(discriminant)) / 2.0;
             // Check if solution satisfies upwind condition
-            if (std::abs(phi_new) >= std::max(std::abs(a), std::abs(b))) {
+            if (std::abs(phi_new) > std::max(std::abs(a), std::abs(b))) {
                 return phi_new;
             }
         }
@@ -209,10 +209,7 @@ torch::Tensor upsample(const torch::Tensor& tensor, int scale_factor) {
     int64_t new_H = H * scale_factor;
     int64_t new_W = W * scale_factor;
     
-    // NOTE: This much use bilinear interpolation instead of bicubic. 
-    // It's possible for bicubic interpolation to introduce sign changes,
-    // which makes it unsuitable for this application.
-    auto upsampled = at::upsample_bilinear2d(
+    auto upsampled = at::upsample_bicubic2d(
         t,
         at::IntArrayRef{new_H, new_W},
         false, // align_corners
@@ -241,7 +238,7 @@ torch::Tensor downsample(const torch::Tensor& tensor, int scale_factor) {
     int new_H = H / scale_factor;
     int new_W = W / scale_factor;
     
-    auto downsampled = at::upsample_bilinear2d(
+    auto downsampled = at::upsample_bicubic2d(
         t,
         at::IntArrayRef{new_H, new_W},
         false, // align_corners
@@ -276,6 +273,7 @@ torch::Tensor sdf_reinit(
     auto reinitialized_sdf = sdf_init.clone();
     int T = sdf_init.size(0);
     
+    #pragma omp parallel for
     for (int t = 0; t < T; t++) {
         auto frame = sdf_init[t];
         auto frame_f64 = frame.to(torch::kFloat64);        
@@ -288,7 +286,7 @@ torch::Tensor sdf_reinit(
         auto sdf_corrected = downsample(upsample_sdf_corrected, scale_factor);
         
         // Only reinitialize the SDF at points sufficiently far from the interfaces
-        auto far_mask = abs(frame) < far_threshold;
+        auto far_mask = sdf_corrected < far_threshold;
         auto sdf_corrected_typed = sdf_corrected.to(dtype);
         reinitialized_sdf[t].masked_scatter_(far_mask, sdf_corrected_typed.masked_select(far_mask));
     }

@@ -99,7 +99,6 @@ class NeighborMoEFluidEmbed(nn.Module):
         for idx, blk in enumerate(self.blocks):
             with record_function(f"block_{idx}"):
                x, moe_output = blk(x)
-               x = x * fluid_gamma_embedding + fluid_beta_embedding
                moe_outputs.append(moe_output)
         
         x = rearrange(x, "b t h w c -> b t c h w").contiguous()
@@ -121,7 +120,7 @@ class NeighborMoEFluidEmbed(nn.Module):
         vel = rearrange(vel, "(b t) c h w -> b t c h w", b=B, t=T)
         x = torch.cat((sdf, temp, vel), dim=2)
         
-        # Skip connection from the last timestep of the original input
-        x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)
+        # Skip connection from the input
+        x = x + input
         
         return x, moe_outputs

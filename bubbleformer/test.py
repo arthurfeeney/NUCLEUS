@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 import torch
+import numpy as np
 from bubbleformer.data.batching import Data
 from bubbleformer.data import BubbleForecast
 from bubbleformer.layers.moe.topk_moe import TopkMoEOutput
@@ -10,13 +11,73 @@ from bubbleformer.utils.normalize import normalize, unnormalize
 
 @dataclass
 class TestResults:
+    case_name: str
     preds: torch.Tensor
     targets: torch.Tensor
-    p: PhysicalMetrics
-    b: BubbleMetrics
-    moe_outputs: List[TopkMoEOutput]
+    pred_physical_metrics: PhysicalMetrics
+    target_physical_metrics: PhysicalMetrics
+    pred_bubble_metrics: BubbleMetrics
+    target_bubble_metrics: BubbleMetrics
+    moe_outputs: List[List[TopkMoEOutput]] # Timesteps x Layers x TopkMoEOutput
     fluid_params: dict
 
+@dataclass
+class TimeDistributionMetrics:
+    vapor_volume: Tuple[float, float]
+    heater_temp: Tuple[float, float]
+    liquid_temp: Tuple[float, float]
+    bubble_count: Tuple[float, float]
+    bubble_volume: Tuple[float, float]
+    bubble_x_velocity: Tuple[float, float]
+    bubble_y_velocity: Tuple[float, float]
+    abs_max_eikonal_error: float
+
+def bubble_metric(bubble_metric: List[List[List[float]]]):
+    bubbles = []
+    for batch in bubble_metric:
+        for timestep in batch:
+            for bubble_metric in timestep:
+                bubbles.append(bubble_metric)
+    flat = np.array(bubbles)
+    return np.mean(flat), np.std(flat)
+
+def metric_distribution(physical_metrics: PhysicalMetrics, bubble_metrics: BubbleMetrics):
+    vapor_volume = physical_metrics.vapor_volume
+    # TODO: Do something else to compare temps..., not normally distributed
+    liquid_temp = physical_metrics.mean_liquid_temperature
+    heater_temp = physical_metrics.liquid_temperature_at_heater
+    
+    bubble_count = bubble_metrics.bubble_count
+    bubble_volume = bubble_metrics.bubble_volume
+    bubble_x_velocity = bubble_metrics.bubble_x_velocity
+    bubble_y_velocity = bubble_metrics.bubble_y_velocity
+    
+    return TimeDistributionMetrics(
+        vapor_volume=(vapor_volume.mean().item(), vapor_volume.std().item()),
+        heater_temp=None,#(heater_temp.mean(dim=(1, 2)).item(), heater_temp.std(dim=(1, 2)).item()),
+        liquid_temp=(liquid_temp.mean().item(), liquid_temp.std().item()),
+        bubble_count=(bubble_count.float().mean().item(), bubble_count.float().std().item()),
+        bubble_volume=bubble_metric(bubble_volume),
+        bubble_x_velocity=bubble_metric(bubble_x_velocity),
+        bubble_y_velocity=bubble_metric(bubble_y_velocity),
+        abs_max_eikonal_error=(1 - physical_metrics.eikonal).abs().max().item()
+    )
+    
+def clip_liquid_temp(preds, fluid_params):
+    liquid = fluid_params["liquid"]
+    if liquid == "fc72":
+        max_liquid_temp = 58
+    elif liquid == "r515b":
+        max_liquid_temp = -18
+    elif liquid == "ln2":
+        max_liquid_temp = -196
+    sdf = preds[:, :, 0, :, :]
+    temp = preds[:, :, 1, :, :]
+    liquid_mask = sdf < 0
+    temp[liquid_mask] = torch.clamp(temp[liquid_mask], max=max_liquid_temp)
+    temp[~liquid_mask] = torch.clamp(temp[~liquid_mask], min=fluid_params["bulk_temp"])
+    return temp
+    
 def run_test(model, test_file_path: str, max_timesteps: int):
     downsample_factor = 1
     test_dataset = BubbleForecast(
@@ -25,22 +86,25 @@ def run_test(model, test_file_path: str, max_timesteps: int):
         output_fields=["dfun", "temperature", "velx", "vely"],
         norm="none",
         downsample_factor=downsample_factor,
-        time_window=5,
-        start_time=200,
+        #future_time_window=10,
+        #history_time_window=10,
+        #time_step=2,
+        future_time_window=5,
+        history_time_window=5,
+        time_step=1,
+        start_time=400,
         return_fluid_params=True,
     )
 
     start_time = test_dataset.start_time
-    skip_itrs = test_dataset.time_window
+    skip_itrs = test_dataset.future_time_window
     preds = []
     targets = []
     timesteps = []
     moe_outputs = []
 
     with torch.inference_mode():
-        for itr in range(0, max_timesteps, skip_itrs):
-            print(f"Processing timestep {itr} / {max_timesteps}")
-            
+        for itr in range(0, max_timesteps, skip_itrs):            
             data: Data = test_dataset[itr]
             
             batch = data.to_collated_batch()
@@ -57,13 +121,9 @@ def run_test(model, test_file_path: str, max_timesteps: int):
                 pred = output
                 moe_output = []
             
-            # NOTE: only tracking moe outputs for the first layer
-            # all tensor are moved to the CPU
             if len(moe_output) > 0:
-                moe_outputs.append(moe_output[0].detach().to('cpu'))
-                
-            #pred = unnormalize(pred, data.fluid_params_dict["bulk_temp"], data.fluid_params_dict["heater"]["wallTemp"])
-            #tgt = unnormalize(tgt, data.fluid_params_dict["bulk_temp"], data.fluid_params_dict["heater"]["wallTemp"])
+                # NOTE: only tracking moe outputs for every layer. Must move to CPU to avoid mem overflow.
+                moe_outputs.append([m.detach().to('cpu') for m in moe_output])
 
             # clip pred temperature to valid range, between liquid bulk temp and heater temp.
             pred[:, :, 1] = torch.clamp(
@@ -71,14 +131,13 @@ def run_test(model, test_file_path: str, max_timesteps: int):
                 min=data.fluid_params_dict["bulk_temp"], 
                 max=data.fluid_params_dict["heater"]["wallTemp"]
             )
+            #pred[:, :, 1] = clip_liquid_temp(pred, data.fluid_params_dict)
             
             pred = pred.to(torch.float32).squeeze(0).detach().cpu()
             tgt = tgt.to(torch.float32).squeeze(0).detach().cpu()
-            
-            print(data.dx)
-            
+                        
             # Reinitialize the SDF at each timestep
-            #pred[:, 0] = sdf_reinit(pred[:, 0], dx=data.dx, far_threshold=2)
+            #pred[:, 0] = sdf_reinit(pred[:, 0], dx=1 / 4, far_threshold=-4)
             
             preds.append(pred)
             targets.append(tgt)
@@ -91,18 +150,15 @@ def run_test(model, test_file_path: str, max_timesteps: int):
     targets = torch.cat(targets, dim=0)[None, ...]     # 1, T, C, H, W
     timesteps = torch.cat(timesteps, dim=0)             # T,
 
-    topk_indices = [moe_output.topk_indices.squeeze(0) for moe_output in moe_outputs]
-    if topk_indices:
-        topk_indices = torch.cat(topk_indices, dim=0) # (T, H, W, topk)
-    else:
-        topk_indices = None
+    fluid_params = test_dataset.fluid_params[0]
 
     print("-"*100)
     print(f"Rollout Statistics on {test_file_path}:")
-    dx = 1/32 * downsample_factor
+    dx = 1/4
     dy = dx
-    """
-    p = physical_metrics(
+    bulk_temp = fluid_params["bulk_temp"]
+    heater_temp = fluid_params["heater"]["wallTemp"]
+    pred_physical_metrics = physical_metrics(
         preds[:, :, 0], 
         preds[:, :, 1], 
         preds[:, :, 2], 
@@ -110,16 +166,51 @@ def run_test(model, test_file_path: str, max_timesteps: int):
         # TODO: get these from dataset
         heater_min=-5.25,
         heater_max=5.25,
+        bulk_temp=bulk_temp,
+        heater_temp=heater_temp,
         # TODO: get from dataset
         xcoords=torch.arange(-8, 8, dx) + dx / 2,
         # TODO: get from dataset
         dx=dx, 
         dy=dy
     )
-    b = bubble_metrics(preds[:, :, 0], preds[:, :, 2], preds[:, :, 3], dx=dx, dy=dy)
-    """
-    p = None
-    b = None
+    pred_bubble_metrics = bubble_metrics(preds[:, :, 0], preds[:, :, 2], preds[:, :, 3], dx=dx, dy=dy)
     
-    # NOTE: the test dataset is only one file, so we can take the first index in fluid_params
-    return TestResults(preds, targets, p, b, moe_outputs, fluid_params=test_dataset.fluid_params[0])
+    target_physical_metrics = physical_metrics(
+        targets[:, :, 0], 
+        targets[:, :, 1], 
+        targets[:, :, 2], 
+        targets[:, :, 3],
+        # TODO: get these from dataset
+        heater_min=-5.25,
+        heater_max=5.25,
+        bulk_temp=bulk_temp,
+        heater_temp=heater_temp,
+        xcoords=torch.arange(-8, 8, dx) + dx / 2,
+        dx=dx,
+        dy=dy
+    )
+    target_bubble_metrics = bubble_metrics(targets[:, :, 0], targets[:, :, 2], targets[:, :, 3], dx=dx, dy=dy)
+    
+    metric_distribution_pred = metric_distribution(pred_physical_metrics, pred_bubble_metrics)
+    metric_distribution_target = metric_distribution(target_physical_metrics, target_bubble_metrics)
+    
+    case_name = f"{fluid_params['setup']}_{fluid_params['liquid']}_{fluid_params['heater']['wallTemp']}"
+    
+    print(f"{case_name}, Pred Metrics: ")
+    print(metric_distribution_pred)
+    print(f"{case_name}, Target Metrics: ")
+    print(metric_distribution_target)
+    
+    return TestResults(
+        case_name,
+        preds, 
+        targets, 
+        pred_physical_metrics, 
+        target_physical_metrics, 
+        pred_bubble_metrics, 
+        target_bubble_metrics, 
+        moe_outputs, 
+        # the test dataset is only one file, so we can take the first index in fluid_params
+        fluid_params=fluid_params
+    )

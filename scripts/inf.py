@@ -6,7 +6,16 @@ from bubbleformer.models import get_model
 import hydra
 from omegaconf import DictConfig
 from bubbleformer.test import run_test, TestResults
-from bubbleformer.plot.plotting import plot_rollout, plot_rollout_stability
+from bubbleformer.plot.plotting import (
+    plot_rollout, 
+    plot_rollout_stability, 
+    plot_rollout_moe_overlay,
+)
+from bubbleformer.plot.plot_metrics import (
+    plot_simple_metrics,
+    plot_vapor_volume_at_height,
+    plot_bubble_counts,
+)
 from bubbleformer.utils.set_fp32_precision import set_fp32_precision
 
 @hydra.main(version_base=None, config_path="../bubbleformer/config", config_name="default")
@@ -17,7 +26,6 @@ def main(cfg: DictConfig):
     model_kwargs = {
         "input_fields": 4,
         "output_fields": 4,
-        "time_window": cfg.data_cfg.time_window,
         "patch_size": cfg.model_cfg.params.patch_size,
         "embed_dim": cfg.model_cfg.params.embed_dim,
         "processor_blocks": cfg.model_cfg.params.processor_blocks,
@@ -44,17 +52,21 @@ def main(cfg: DictConfig):
     # Rollouts are saved in the directory containing the checkpoint
     save_root = pathlib.Path(cfg.checkpoint_path).parent / "inference_rollouts"
     save_root.mkdir(parents=True, exist_ok=True)
+    all_test_results = []
     for test_file_path in cfg.data_cfg.test_paths:
-        test_results: TestResults = run_test(model, test_file_path, max_timesteps=41)
-        setup = test_results.fluid_params["setup"]
-        liquid = test_results.fluid_params["liquid"]
-        heater_temp = test_results.fluid_params["heater"]["wallTemp"]
-        
-        save_dir = save_root / f"{setup}_{liquid}_{heater_temp}"
+        test_results: TestResults = run_test(model, test_file_path, max_timesteps=300)
+        all_test_results.append(test_results)
+
+        save_dir = save_root / f"{test_results.case_name}"
         save_dir.mkdir(parents=True, exist_ok=True)
-        plot_rollout(save_dir, test_results.preds, test_results, step_size=20)
-        plot_rollout_stability(save_dir, test_results.preds.squeeze(0), test_results.targets.squeeze(0))
-        torch.save(test_results, save_dir / "test_results.pt")
+        #plot_rollout(
+        #    save_dir=save_dir,
+        #    rollout=test_results.preds,
+        #    test_results=test_results,
+        #    step_size=5,
+        #)
+        
+    torch.save(all_test_results, save_root / "test_results_reinit.pt")
 
 if __name__ == "__main__":
     # pylint: disable=no-value-for-parameter
