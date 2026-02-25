@@ -286,7 +286,7 @@ torch::Tensor sdf_reinit(
         auto sdf_corrected = downsample(upsample_sdf_corrected, scale_factor);
         
         // Only reinitialize the SDF at points sufficiently far from the interfaces
-        auto far_mask = sdf_corrected < far_threshold;
+        auto far_mask = sdf_corrected.abs() > far_threshold;
         auto sdf_corrected_typed = sdf_corrected.to(dtype);
         reinitialized_sdf[t].masked_scatter_(far_mask, sdf_corrected_typed.masked_select(far_mask));
     }

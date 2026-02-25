@@ -137,7 +137,7 @@ def run_test(model, test_file_path: str, max_timesteps: int):
             tgt = tgt.to(torch.float32).squeeze(0).detach().cpu()
                         
             # Reinitialize the SDF at each timestep
-            #pred[:, 0] = sdf_reinit(pred[:, 0], dx=1 / 4, far_threshold=-4)
+            pred[:, 0] = sdf_reinit(pred[:, 0], dx=1 / 4, far_threshold=4)
             
             preds.append(pred)
             targets.append(tgt)
