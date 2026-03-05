@@ -103,7 +103,7 @@ class MoEBase(nn.Module):
         x = rearrange(x, "b t h w c -> b t c h w").contiguous()
         
         # Skip connection from patch and fluid embeddings
-        x = x + embed + fluid_embed
+        x = x + embed + rearrange(fluid_embed, "b t h w c -> b t c h w")
        
         # Decode
         x = rearrange(x, "b t c h w -> (b t) c h w")
