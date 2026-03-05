@@ -19,6 +19,7 @@ from bubbleformer.data.batching import collate
 from bubbleformer.data import BubbleForecast, DownsampledBubbleForecast
 from bubbleformer.modules import get_train_module
 from bubbleformer.utils.set_fp32_precision import set_fp32_precision
+from bubbleformer.utils.parameter_count import count_model_parameters
 
 def is_leader_process():
     """
@@ -62,7 +63,7 @@ class PreemptionCheckpointCallback(Callback):
             print(f"Due to preemption Checkpoint saved to {self.checkpoint_path}.")
         except Exception as e:
             print(f"Failed to save checkpoint: {e}")
-        # Optionally, delay a bit to ensure the checkpoint save finishes.
+        # delay a bit to ensure the checkpoint save finishes.
         time.sleep(5)
 
 @hydra.main(version_base=None, config_path="../bubbleformer/config", config_name="default")
@@ -152,6 +153,11 @@ def main(cfg: DictConfig) -> None:
         scheduler_cfg=cfg.scheduler_cfg,
         log_wandb=cfg.use_wandb,
     )
+
+    active_params = count_model_parameters(train_module.model, active=True)
+    total_params = count_model_parameters(train_module.model, active=False)
+    print(f"Active Model parameters: {active_params:,d}")
+    print(f"Total Model parameters: {total_params:,d}")
 
     progress_bar = RichProgressBar(
         theme=RichProgressBarTheme(
