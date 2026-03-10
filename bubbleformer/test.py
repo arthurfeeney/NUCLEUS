@@ -68,13 +68,13 @@ def clip_liquid_temp(preds, fluid_params):
     if liquid == "fc72":
         max_liquid_temp = 58
     elif liquid == "r515b":
-        max_liquid_temp = -18
+        max_liquid_temp = -19
     elif liquid == "ln2":
         max_liquid_temp = -196
     sdf = preds[:, :, 0, :, :]
     temp = preds[:, :, 1, :, :]
     liquid_mask = sdf < 0
-    temp[liquid_mask] = torch.clamp(temp[liquid_mask], max=max_liquid_temp)
+    temp[liquid_mask] = torch.clamp(temp[liquid_mask], max=max_liquid_temp, min=fluid_params["bulk_temp"])
     temp[~liquid_mask] = torch.clamp(temp[~liquid_mask], min=fluid_params["bulk_temp"])
     return temp
     
