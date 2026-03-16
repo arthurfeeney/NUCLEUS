@@ -9,12 +9,20 @@ import yaml
 
 @dataclass
 class NormalizerConstants:
-    absmax_temp: float
-    temp_half_std: float
-    sdf_mean: float
     max_domain_size: float
+    sdf_mean: float
+    sdf_std: float
+    
+    absmax_temp: float
+    temp_mean: float
+    temp_std: float
+    
+    velx_mean: float
     velx_std: float
+
+    vely_mean: float
     vely_std: float
+
     numeric_fluid_params_min: Optional[dict] = None
     numeric_fluid_params_max: Optional[dict] = None
     
@@ -22,19 +30,22 @@ class NormalizerConstants:
         r"""
         This returns a YAML string that can be used as a config file for the normalizer.
         """
-        fluid_params_min_yaml = yaml.dump(self.numeric_fluid_params_min, default_flow_style=False) if self.numeric_fluid_params_min is not None else ""
-        fluid_params_max_yaml = yaml.dump(self.numeric_fluid_params_max, default_flow_style=False) if self.numeric_fluid_params_max is not None else ""
         fluid_params_yaml = [
-            f"absmax_temp: {self.absmax_temp}",
-            f"max_temp_diff: {self.max_temp_diff}",
             f"max_domain_size: {self.max_domain_size}",
+            f"sdf_mean: {self.sdf_mean}",
+            f"sdf_std: {self.sdf_std}",
+            f"absmax_temp: {self.absmax_temp}",
+            f"temp_mean: {self.temp_mean}",
+            f"temp_std: {self.temp_std}",
+            f"velx_mean: {self.velx_mean}",
             f"velx_std: {self.velx_std}",
+            f"vely_mean: {self.vely_mean}",
             f"vely_std: {self.vely_std}",
         ]
         
         fmin = yaml.dump({"fluid_params_min": self.numeric_fluid_params_min}, default_flow_style=False) if self.numeric_fluid_params_min is not None else None
         fmax = yaml.dump({"fluid_params_max": self.numeric_fluid_params_max}, default_flow_style=False) if self.numeric_fluid_params_max is not None else None
-        
+                
         if fmin:
             fluid_params_yaml.append(fmin)
         if fmax:
@@ -43,20 +54,13 @@ class NormalizerConstants:
         return "\n".join(fluid_params_yaml)
 
 def minmax_normalize(value: float, min: float, max: float) -> float:
-    return (value - min) / (max - min)
+    return ((value - min) / (max - min)) * 2 - 1
 
 def minmax_unnormalize(value: float, min: float, max: float) -> float:
-    return value * (max - min) + min
+    return ((value + 1) / 2) * (max - min) + min
 
 class Normalizer:
-    r"""
-    This normalizes the sdf, temperature, and velocity fields. It also performs minmax normalization on the fluid parameters.
-    1. sdf is normalized to [-1, 1] using the max training domain size
-    2. temperature is normalized to [0, 1] using the bulk temperature and absolute maximum temperature across all training data.
-       - the bulk temperature MUST be passed in for this to work.
-    3. the velocities are normalized using the std across all training data.
-    """
-    def __init__(self, constants):
+    def __init__(self, constants: NormalizerConstants):
         self.constants = constants
         
     def normalize_params(self, fluid_params_dict: dict) -> dict:
@@ -72,10 +76,10 @@ class Normalizer:
         ])
         
     def normalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
-        return torch.log1p(temp - bulk_temp)
-    
+        pass
+
     def unnormalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
-        return torch.expm1(temp) + bulk_temp
+        pass
 
     def normalize_velx(self, vel: torch.Tensor) -> torch.Tensor:
         return vel / self.constants.velx_std
@@ -90,10 +94,67 @@ class Normalizer:
         return vel * self.constants.vely_std
     
     def normalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
-        return sdf / (self.constants.max_domain_size)
+        return sdf - self.constants.sdf_mean / (self.constants.sdf_std)
     
     def unnormalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
-        return sdf * (self.constants.max_domain_size)
+        return sdf * self.constants.sdf_std + self.constants.sdf_mean
+    
+    def normalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
+        assert data.dim() >= 3, "Data must be at least 3D (..., C, H, W)"
+        assert data.shape[-3] == 4, "Data must have 4 channels (sdf, temp, velx, vely)"
+        assert data.shape[:-3] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
+        return torch.stack([
+            self.normalize_sdf(data[..., 0, :, :]),
+            self.normalize_temp(data[..., 1, :, :], bulk_temp),
+            self.normalize_velx(data[..., 2, :, :]),
+            self.normalize_vely(data[..., 3, :, :]),
+        ], dim=-3)
+        
+    def unnormalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
+        assert data.dim() >= 3, "Data must be at least 3D (..., C, H, W)"
+        assert data.shape[-3] == 4, "Data must have 4 channels (sdf, temp, velx, vely)"
+        assert data.shape[:-3] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
+        return torch.stack([
+            self.unnormalize_sdf(data[..., 0, :, :]),
+            self.unnormalize_temp(data[..., 1, :, :], bulk_temp),
+            self.unnormalize_velx(data[..., 2, :, :]),
+            self.unnormalize_vely(data[..., 3, :, :]),
+        ], dim=-3)
+
+class StandardNormalizer(Normalizer):
+    r"""
+    Normalizes all fields (sdf, temperature, velocities) to have zero mean and unit variance.
+    The temperature is handled difference, so that it first subtracts the samples bulk temperature,
+    and then normalizes the difference to have zero mean and unit variance.
+    """
+    def __init__(self, constants: NormalizerConstants):
+        super().__init__(constants)
+        
+    def normalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
+        return ((temp - bulk_temp) - self.constants.temp_mean) / self.constants.temp_std
+    
+    def unnormalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
+        return temp * self.constants.temp_std + self.constants.temp_mean + bulk_temp
+    
+def get_normalizer(normalizer_cfg: dict) -> Normalizer:
+    constants = NormalizerConstants(
+        max_domain_size=normalizer_cfg["max_domain_size"],
+        sdf_mean=normalizer_cfg["sdf_mean"],
+        sdf_std=normalizer_cfg["sdf_std"],
+        absmax_temp=normalizer_cfg["absmax_temp"],
+        temp_mean=normalizer_cfg["temp_mean"],
+        temp_std=normalizer_cfg["temp_std"],
+        velx_mean=normalizer_cfg["velx_mean"],
+        velx_std=normalizer_cfg["velx_std"],
+        vely_mean=normalizer_cfg["vely_mean"],
+        vely_std=normalizer_cfg["vely_std"],
+        numeric_fluid_params_min=normalizer_cfg["fluid_params_min"],
+        numeric_fluid_params_max=normalizer_cfg["fluid_params_max"],
+    )
+    if normalizer_cfg["name"] == "standard":
+        return StandardNormalizer(constants)
+    else:
+        raise ValueError(f"Unknown normalizer: {normalizer_cfg.name}")
 
 class RunningVariance:
     def __init__(self, bins: int, range: tuple[float, float]):
@@ -152,34 +213,53 @@ def nested_dict_max(dict1: dict, dict2: dict) -> dict:
 
 @hydra.main(config_path="../../bubbleformer/config", config_name="default")    
 def main(cfg: DictConfig):
+    """
+    This script computes and prints constants that can be used for normalizing the data.
+    It prints a yaml string that can be copy-pasted into a config file and reused for training.
+    """
+
     import h5py
     import json
     
-    constants = NormalizerConstants(0, 0, 0, 0, 0, 0)
+    absmax_temp = float("-inf")
+    max_domain_size = float("-inf")
     fluid_params_min = None
     fluid_params_max = None
     
-    # Initial loop to get the absolute max velocities
+    start_time = 300
+    step_size = 100
+    
+    # Initial loop to get the limits for the running variances.
+    max_sdf = float("-inf")
+    max_temp = float("-inf")
     max_velx = float("-inf")
     max_vely = float("-inf")
-    for train_path in cfg.data_cfg.train_paths[:2]:
+    for train_path in cfg.data_cfg.train_paths:
         with h5py.File(train_path, "r") as f:
-            velx = f["velx"][:]
-            vely = f["vely"][:]
-            max_velx = max(max_velx, np.abs(velx).max().item())
-            max_vely = max(max_vely, np.abs(vely).max().item())
+            sdf = f["dfun"][start_time::step_size]
+            temp = f["temperature"][start_time::step_size]
+            velx = f["velx"][start_time::step_size]
+            vely = f["vely"][start_time::step_size]
+        with open(train_path.replace(".hdf5", ".json"), "r") as f:
+            fluid_params_dict = json.load(f)
+        max_sdf = max(max_sdf, np.abs(sdf).max().item())
+        max_temp = max(max_temp, np.abs(temp).max().item() - fluid_params_dict["bulk_temp"])
+        max_velx = max(max_velx, np.abs(velx).max().item())
+        max_vely = max(max_vely, np.abs(vely).max().item())
     
-    # Utility to track the variance of the velocities.
+    sdf_running_variance = RunningVariance(bins=1000, range=(-max_sdf, max_sdf))
+    temp_running_variance = RunningVariance(bins=1000, range=(-max_temp, max_temp))
     velx_running_variance = RunningVariance(bins=1000, range=(-max_velx, max_velx))
     vely_running_variance = RunningVariance(bins=1000, range=(-max_vely, max_vely))
     
     # Loop to get the normalization constants for the SDF, temperature, and velocities.
-    for train_path in cfg.data_cfg.train_paths[:2]:
+    for train_path in cfg.data_cfg.train_paths:
         #print(train_path)
         with h5py.File(train_path, "r") as f:
-            temp = f["temperature"][300:]
-            velx = f["velx"][300:]
-            vely = f["vely"][300:]
+            sdf = f["dfun"][start_time::step_size]
+            temp = f["temperature"][start_time::step_size]
+            velx = f["velx"][start_time::step_size]
+            vely = f["vely"][start_time::step_size]
         with open(train_path.replace(".hdf5", ".json"), "r") as f:
             fluid_params_dict = json.load(f)
         
@@ -187,13 +267,14 @@ def main(cfg: DictConfig):
         y_size = fluid_params_dict["y_max"] - fluid_params_dict["y_min"]
         max_domain_size = max(x_size, y_size)
         
-        constants.absmax_temp = max(constants.absmax_temp, np.abs(temp).max())
-        constants.max_temp_diff = max(constants.max_temp_diff, np.abs(temp).max() - fluid_params_dict["bulk_temp"])
-        constants.max_domain_size = max(constants.max_domain_size, max_domain_size)
+        absmax_temp = max(absmax_temp, np.abs(temp).max() - fluid_params_dict["bulk_temp"])
+        max_domain_size = max(max_domain_size, max_domain_size)
         
+        sdf_running_variance.update(sdf)
+        temp_running_variance.update(temp - fluid_params_dict["bulk_temp"])
         velx_running_variance.update(velx)
         vely_running_variance.update(vely)
-        
+    
         if fluid_params_min is None:
             fluid_params_min = fluid_params_dict
         else:
@@ -203,11 +284,21 @@ def main(cfg: DictConfig):
         else:
             fluid_params_max = nested_dict_max(fluid_params_max, fluid_params_dict)
     
-    constants.velx_std = velx_running_variance.std()
-    constants.vely_std = vely_running_variance.std()
-    constants.numeric_fluid_params_min = fluid_params_min
-    constants.numeric_fluid_params_max = fluid_params_max
-
+    constants = NormalizerConstants(
+        max_domain_size=max_domain_size,
+        sdf_mean=sdf_running_variance.mean(),
+        sdf_std=sdf_running_variance.std(),
+        absmax_temp=absmax_temp,
+        temp_mean=temp_running_variance.mean(),
+        temp_std=temp_running_variance.std(),
+        velx_mean=velx_running_variance.mean(),
+        velx_std=velx_running_variance.std(),
+        vely_mean=vely_running_variance.mean(),
+        vely_std=vely_running_variance.std(),
+        numeric_fluid_params_min=fluid_params_min,
+        numeric_fluid_params_max=fluid_params_max,
+    )
+    
     print(constants)
     print(constants.to_yaml_string())
     
