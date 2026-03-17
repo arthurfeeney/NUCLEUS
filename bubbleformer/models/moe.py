@@ -58,6 +58,7 @@ class MoEBase(nn.Module):
             out_channels=embed_dim
         )
         
+        self.out_norm = nn.InstanceNorm2d(embed_dim)
         self.sdf_proj = nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1, dtype=torch.float32)
         self.temp_proj = nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1, dtype=torch.float32)
         self.vel_proj = nn.Conv2d(embed_dim, 2, kernel_size=3, padding=1, dtype=torch.float32)
@@ -68,7 +69,7 @@ class MoEBase(nn.Module):
         fluid_params: (B, num_fluid_params)
         """
         x = batch.input
-        fluid_params = batch.fluid_params_tensor
+        fluid_params = batch.fluid_params_tensor(x.device)
         B, T, _, _, _ = x.shape
         
         input = x.clone()
@@ -108,10 +109,10 @@ class MoEBase(nn.Module):
         # Decode
         x = rearrange(x, "b t c h w -> (b t) c h w")
         x = self.debed(x)
-        x = nn.functional.gelu(x)
         
         # convert to float32 for high-precision output projection
         x = x.to(torch.float32)
+        x = self.out_norm(x)
         
         # project to output fields
         sdf = self.sdf_proj(x)

@@ -18,8 +18,8 @@ wandb_tags:
   - AdamW-optimizer
 defaults:
   - _self_
-  - data_cfg: poolboiling
+  - data_cfg: poolboiling64
   - model_cfg: neighbor_moe1
   - optim_cfg: adamw
   - scheduler_cfg: cosine_warmup
-  - normalizer_cfg: simple
+  - normalizer_cfg: standard

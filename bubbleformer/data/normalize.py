@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from omegaconf import DictConfig
 import hydra
 import math
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 import yaml
 
 @dataclass
@@ -54,27 +54,53 @@ class NormalizerConstants:
         return "\n".join(fluid_params_yaml)
 
 def minmax_normalize(value: float, min: float, max: float) -> float:
+    if min == max: return 0.0
     return ((value - min) / (max - min)) * 2 - 1
 
 def minmax_unnormalize(value: float, min: float, max: float) -> float:
+    if min == max: return min
     return ((value + 1) / 2) * (max - min) + min
+
+def is_number(value: any) -> bool:
+    if isinstance(value, (float, int)):
+        return True
+    # If it's a string, try converting to float
+    try:
+        float(value)
+        return True
+    except:
+        return False
+
+def dict_normalize_helper(dict_to_normalize: dict, func: Callable, min_dict: dict, max_dict: dict) -> dict:
+    r"""
+    Normalizes all numeric fields in the `dict_to_normalize`. Applied recursively to nested dictionaries.
+    Non-numeric / dictionary fields are directly copied.
+    """
+    normalized_dict = {}
+    for key, value in dict_to_normalize.items():
+        if isinstance(value, dict):
+            normalized_dict[key] = dict_normalize_helper(value, func, min_dict[key], max_dict[key])
+        elif is_number(value):
+            normalized_dict[key] = func(value, min_dict[key], max_dict[key])
+        else:
+            normalized_dict[key] = value
+    return normalized_dict
 
 class Normalizer:
     def __init__(self, constants: NormalizerConstants):
         self.constants = constants
         
-    def normalize_params(self, fluid_params_dict: dict) -> dict:
-        return dict([
-            (key, minmax_normalize(value, self.constants.numeric_fluid_params_min[key], self.constants.numeric_fluid_params_max[key]))
-            for key, value in fluid_params_dict.items()
-        ])
+    def normalize_params(self, fluid_params_dicts: List[dict]) -> List[dict]:
+        return [
+            dict_normalize_helper(fluid_params_dict, minmax_normalize, self.constants.numeric_fluid_params_min, self.constants.numeric_fluid_params_max)
+            for fluid_params_dict in fluid_params_dicts 
+        ]
+    def unnormalize_params(self, fluid_params_dicts: List[dict]) -> List[dict]:
+        return [
+            dict_normalize_helper(fluid_params_dict, minmax_unnormalize, self.constants.numeric_fluid_params_min, self.constants.numeric_fluid_params_max)
+            for fluid_params_dict in fluid_params_dicts
+        ]
 
-    def unnormalize_params(self, fluid_params_dict: dict) -> dict:
-        return dict([
-            (key, minmax_unnormalize(value, self.constants.numeric_fluid_params_min[key], self.constants.numeric_fluid_params_max[key]))
-            for key, value in fluid_params_dict.items()
-        ])
-        
     def normalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
         pass
 
@@ -100,9 +126,9 @@ class Normalizer:
         return sdf * self.constants.sdf_std + self.constants.sdf_mean
     
     def normalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
-        assert data.dim() >= 3, "Data must be at least 3D (..., C, H, W)"
+        assert data.dim() >= 4, "Data must be at least 4D (..., T, C, H, W)"
         assert data.shape[-3] == 4, "Data must have 4 channels (sdf, temp, velx, vely)"
-        assert data.shape[:-3] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
+        assert data.shape[:-4] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
         return torch.stack([
             self.normalize_sdf(data[..., 0, :, :]),
             self.normalize_temp(data[..., 1, :, :], bulk_temp),
@@ -111,16 +137,16 @@ class Normalizer:
         ], dim=-3)
         
     def unnormalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
-        assert data.dim() >= 3, "Data must be at least 3D (..., C, H, W)"
+        assert data.dim() >= 4, "Data must be at least 4D (..., T, C, H, W)"
         assert data.shape[-3] == 4, "Data must have 4 channels (sdf, temp, velx, vely)"
-        assert data.shape[:-3] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
+        assert data.shape[:-4] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
         return torch.stack([
             self.unnormalize_sdf(data[..., 0, :, :]),
             self.unnormalize_temp(data[..., 1, :, :], bulk_temp),
             self.unnormalize_velx(data[..., 2, :, :]),
             self.unnormalize_vely(data[..., 3, :, :]),
         ], dim=-3)
-
+        
 class StandardNormalizer(Normalizer):
     r"""
     Normalizes all fields (sdf, temperature, velocities) to have zero mean and unit variance.
@@ -131,10 +157,12 @@ class StandardNormalizer(Normalizer):
         super().__init__(constants)
         
     def normalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
-        return ((temp - bulk_temp) - self.constants.temp_mean) / self.constants.temp_std
+        bt = bulk_temp[..., None, None, None] # (..., 1, 1, 1) for broadcasting T, H, W
+        return ((temp - bt) - self.constants.temp_mean) / self.constants.temp_std
     
     def unnormalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
-        return temp * self.constants.temp_std + self.constants.temp_mean + bulk_temp
+        bt = bulk_temp[..., None, None, None] # (..., 1, 1, 1) for broadcasting T, H, W
+        return temp * self.constants.temp_std + self.constants.temp_mean + bt
     
 def get_normalizer(normalizer_cfg: dict) -> Normalizer:
     constants = NormalizerConstants(
@@ -181,16 +209,6 @@ class RunningVariance:
     def mean(self) -> float:
         bin_mid_points = (self.bins[1:] + self.bins[:-1]) / 2
         return np.average(bin_mid_points, weights=self.hist).item()
-    
-def is_number(value: any) -> bool:
-    if isinstance(value, (float, int)):
-        return True
-    # If it's a string, try converting to float
-    try:
-        float(value)
-        return True
-    except:
-        return False
     
 def nested_dict_minmax(dict1: dict, dict2: dict, op: Callable) -> dict:
     r"""

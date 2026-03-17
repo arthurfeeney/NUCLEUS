@@ -1,13 +1,13 @@
 import dataclasses
+from this import d
 import torch
 from typing import Dict, List, Optional
-from bubbleformer.utils.normalize import normalize, unnormalize
+from bubbleformer.data.normalize import Normalizer
 
 @dataclasses.dataclass
 class Data:
     input: torch.Tensor
     target: torch.Tensor
-    fluid_params_tensor: torch.Tensor
     fluid_params_dict: Dict
     x_grid: torch.Tensor
     y_grid: torch.Tensor
@@ -19,7 +19,6 @@ class Data:
         return CollatedBatch(
             input=self.input.unsqueeze(0),
             target=self.target.unsqueeze(0) if self.target is not None else None,
-            fluid_params_tensor=self.fluid_params_tensor.unsqueeze(0),
             fluid_params_dict=[self.fluid_params_dict],
             x_grid=self.x_grid.unsqueeze(0),
             y_grid=self.y_grid.unsqueeze(0),
@@ -32,7 +31,6 @@ class Data:
 class CollatedBatch:
     input: torch.Tensor
     target: Optional[torch.Tensor]
-    fluid_params_tensor: torch.Tensor
     fluid_params_dict: List[Dict]
     x_grid: torch.Tensor
     y_grid: torch.Tensor
@@ -44,7 +42,6 @@ class CollatedBatch:
         return CollatedBatch(
             input=self.input.to(device),
             target=self.target.to(device) if self.target is not None else None,
-            fluid_params_tensor=self.fluid_params_tensor.to(device),
             fluid_params_dict=self.fluid_params_dict,
             x_grid=self.x_grid.to(device),
             y_grid=self.y_grid.to(device),
@@ -57,7 +54,6 @@ class CollatedBatch:
         return CollatedBatch(
             input=self.input.detach(),
             target=self.target.detach() if self.target is not None else None,
-            fluid_params_tensor=self.fluid_params_tensor.detach(),
             fluid_params_dict=self.fluid_params_dict,
             x_grid=self.x_grid.detach(),
             y_grid=self.y_grid.detach(),
@@ -71,7 +67,6 @@ class CollatedBatch:
         return CollatedBatch(
             input=self.input,
             target=None,
-            fluid_params_tensor=self.fluid_params_tensor,
             fluid_params_dict=self.fluid_params_dict,
             x_grid=self.x_grid,
             y_grid=self.y_grid,
@@ -84,13 +79,41 @@ class CollatedBatch:
         return CollatedBatch(
             input=torch.fliplr(self.input),
             target=torch.fliplr(self.target),
-            fluid_params_tensor=self.fluid_params_tensor,
             fluid_params_dict=self.fluid_params_dict,
             x_grid=self.x_grid,
             y_grid=self.y_grid,
             dx=self.dx,
             dy=self.dy,
             rollout_steps=self.rollout_steps
+        )
+        
+    def noise(self, scale):
+        noise = torch.normal(0, scale, self.input.shape, device=self.input.device)
+        return CollatedBatch(
+            input=self.input + noise,
+            target=self.target,
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid,
+            y_grid=self.y_grid,
+            dx=self.dx,
+            dy=self.dy,
+            rollout_steps=self.rollout_steps
+        )
+        
+    def normalize(self, normalizer: Normalizer):
+        return CollatedBatch(
+            input=normalizer.normalize(self.input, self.get_temps()[0]),
+            target=normalizer.normalize(self.target, self.get_temps()[0]),
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid,
+            y_grid=self.y_grid,
+        )
+        
+    def unnormalize(self, normalizer: Normalizer):
+        return CollatedBatch(
+            input=normalizer.unnormalize(self.input, self.get_temps()[0]),
+            target=normalizer.unnormalize(self.target, self.get_temps()[0]),
+            fluid_params_dict=self.fluid_params_dict,
         )
         
     def gaussian_noise(self, sdf_scale: float, temp_scale: float, vel_scale: float):
@@ -107,7 +130,6 @@ class CollatedBatch:
         return CollatedBatch(
             input=noisy_input,
             target=self.target,
-            fluid_params_tensor=self.fluid_params_tensor,
             fluid_params_dict=self.fluid_params_dict,
             x_grid=self.x_grid,
             y_grid=self.y_grid,
@@ -121,13 +143,12 @@ class CollatedBatch:
         heater_temp = torch.tensor([d["heater"]["wallTemp"] for d in self.fluid_params_dict], device=self.input.device)
         return bulk_temp, heater_temp
 
-    def normalize(self):
+    def normalize(self, normalizer: Normalizer):
         bulk_temp, heater_temp = self.get_temps()
         return CollatedBatch(
-            input=normalize(self.input, bulk_temp, heater_temp),
-            target=normalize(self.target, bulk_temp, heater_temp),
-            fluid_params_tensor=self.fluid_params_tensor,
-            fluid_params_dict=self.fluid_params_dict,
+            input=normalizer.normalize(self.input, bulk_temp),
+            target=normalizer.normalize(self.target, bulk_temp),
+            fluid_params_dict=normalizer.normalize_params(self.fluid_params_dict),
             x_grid=self.x_grid,
             y_grid=self.y_grid,
             dx=self.dx,
@@ -135,21 +156,46 @@ class CollatedBatch:
             rollout_steps=self.rollout_steps
         )
     
-    def unnormalize(self):
+    def unnormalize(self, normalizer: Normalizer):
         bulk_temp, heater_temp = self.get_temps()
         return CollatedBatch(
-            input=unnormalize(self.input, bulk_temp, heater_temp),
-            target=unnormalize(self.target, bulk_temp, heater_temp),
-            fluid_params_tensor=self.fluid_params_tensor,
-            fluid_params_dict=self.fluid_params_dict,
+            input=normalizer.unnormalize(self.input, bulk_temp),
+            target=normalizer.unnormalize(self.target, bulk_temp),
+            fluid_params_dict=normalizer.unnormalize_params(self.fluid_params_dict),
             x_grid=self.x_grid,
             y_grid=self.y_grid,
             dx=self.dx,
             dy=self.dy,
             rollout_steps=self.rollout_steps
         )
+        
+    def fluid_params_tensor(self, device):
+        return torch.tensor(
+            [
+                (
+                    d["inv_reynolds"],
+                    d["cpgas"],
+                    d["mugas"],
+                    d["rhogas"],
+                    d["thcogas"],
+                    d["stefan"],
+                    d["prandtl"],
+                    d["gravy"],
+                    d["bulk_temp"],
+                    d["heater"]["wallTemp"],
+                    d["heater"]["nucWaitTime"],
+                    d["heater"]["rcdAngle"],
+                    d["heater"]["advAngle"],
+                    d["heater"]["velContact"],
+                    d["heater"]["xMin"],
+                    d["heater"]["xMax"]
+                ) for d in self.fluid_params_dict
+            ],
+            dtype=torch.float32,
+            device=device
+        )
     
-def make_data(input, target, fluid_params_tensor, fluid_params_dict, downsample_factor: int, rollout_steps: Optional[int] = None):
+def make_data(input, target, fluid_params_dict, downsample_factor: int, rollout_steps: Optional[int] = None):
     dx = (fluid_params_dict["x_max"] - fluid_params_dict["x_min"]) / (fluid_params_dict["num_blocks_x"] * int(fluid_params_dict["nx_block"]))
     dy = (fluid_params_dict["y_max"] - fluid_params_dict["y_min"]) / (fluid_params_dict["num_blocks_y"] * int(fluid_params_dict["ny_block"]))
 
@@ -164,7 +210,6 @@ def make_data(input, target, fluid_params_tensor, fluid_params_dict, downsample_
     return Data(
         input=input,
         target=target,
-        fluid_params_tensor=fluid_params_tensor,
         fluid_params_dict=fluid_params_dict,
         x_grid=x_grid,
         y_grid=y_grid,
@@ -177,7 +222,6 @@ def collate(data: List[Data]):
     return CollatedBatch(
         input=torch.stack([d.input for d in data]),
         target=torch.stack([d.target for d in data]),
-        fluid_params_tensor=torch.stack([d.fluid_params_tensor for d in data]),
         fluid_params_dict=[d.fluid_params_dict for d in data],
         x_grid=torch.stack([d.x_grid for d in data]),
         y_grid=torch.stack([d.y_grid for d in data]),

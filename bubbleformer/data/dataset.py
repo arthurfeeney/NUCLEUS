@@ -121,33 +121,9 @@ class BubbleForecast(Dataset):
         inp_data = torch.stack(inp_data)                                   # (in_C, T, H, W)
         out_data = torch.stack(out_data)                                   # (out_C, T, H, W)
 
-        fluid_params = self.fluid_params[file_idx]
-        fluid_params_tensor = torch.tensor(
-            [
-                fluid_params["inv_reynolds"],
-                fluid_params["cpgas"],
-                fluid_params["mugas"],
-                fluid_params["rhogas"],
-                fluid_params["thcogas"],
-                fluid_params["stefan"],
-                fluid_params["prandtl"],
-                fluid_params["gravy"],
-                fluid_params["bulk_temp"],
-                fluid_params["heater"]["wallTemp"],
-                fluid_params["heater"]["nucWaitTime"],
-                fluid_params["heater"]["rcdAngle"],
-                fluid_params["heater"]["advAngle"],
-                fluid_params["heater"]["velContact"],
-                fluid_params["heater"]["xMin"],
-                fluid_params["heater"]["xMax"],
-            ],
-            dtype=torch.float32,
-        )
-        
         return make_data(
             input=inp_data.float().permute(1, 0, 2, 3),
             target=out_data.float().permute(1, 0, 2, 3),
-            fluid_params_tensor=fluid_params_tensor,
-            fluid_params_dict=fluid_params,
+            fluid_params_dict=self.fluid_params[file_idx],
             downsample_factor=self.downsample_factor
         )

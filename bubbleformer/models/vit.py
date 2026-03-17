@@ -68,7 +68,7 @@ class ViTBase(nn.Module):
         fluid_params: (B, num_fluid_params)
         """
         x = batch.input
-        fluid_params = batch.fluid_params_tensor
+        fluid_params = batch.fluid_params_tensor(x.device)
         B, T, _, _, _ = x.shape
         
         input = x.clone()

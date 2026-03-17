@@ -106,17 +106,18 @@ def main(cfg: DictConfig) -> None:
     if commit_sha is None:
         print("Failed to get commit SHA. Saving in config as None.")
     cfg.commit_sha = commit_sha
-    
-    cfg_dict = OmegaConf.to_object(cfg)
-    print(cfg_dict)
-    logger = WandbLogger(
+        
+    # Init wandb logger so we can use wandb.summary before training starts
+    run = wandb.init(
         entity="hpcforge",
         project="bubbleformer",
         name=log_id,
-        save_dir=cfg.log_dir,
-        config=cfg_dict,
+        dir=cfg.log_dir,
+        config=OmegaConf.to_container(cfg),
     )
-        
+
+    logger = WandbLogger(run=run)
+
     dataset = DownsampledBubbleForecast if "64" in cfg.data_cfg.dataset else BubbleForecast
     
     train_dataset = dataset(
@@ -167,6 +168,7 @@ def main(cfg: DictConfig) -> None:
         checkpoint_path=cfg.checkpoint_path,
         model_cfg=cfg.model_cfg,
         data_cfg=cfg.data_cfg,
+        normalizer_cfg=cfg.normalizer_cfg,
         optim_cfg=cfg.optim_cfg,
         scheduler_cfg=cfg.scheduler_cfg,
         log_wandb=False,
@@ -176,6 +178,16 @@ def main(cfg: DictConfig) -> None:
     total_params = count_model_parameters(train_module.model, active=False)
     print(f"Active Model parameters: {active_params:,d}")
     print(f"Total Model parameters: {total_params:,d}")
+
+    wandb.summary["date"] = date.today().strftime("%Y-%m-%d")
+    wandb.summary["job_id"] = os.getenv("SLURM_JOB_ID")
+    wandb.summary["log_dir"] = cfg.log_dir
+    wandb.summary["model_name"] = cfg.model_cfg.name
+    wandb.summary["data_name"] = cfg.data_cfg.dataset
+    wandb.summary["normalizer_name"] = cfg.normalizer_cfg["name"]
+    wandb.summary["downsample_factor"] = cfg.data_cfg.downsample_factor
+    wandb.summary["active_params"] = active_params
+    wandb.summary["total_params"] = total_params
 
     progress_bar = RichProgressBar(
         theme=RichProgressBarTheme(
