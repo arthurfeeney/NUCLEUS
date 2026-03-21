@@ -119,6 +119,7 @@ class BubbleForecast(Dataset):
         if self.normalizer is not None:
             inp_data = self.normalizer.normalize(inp_data, bulk_temp)
             out_data = self.normalizer.normalize(out_data, bulk_temp)
+            fluid_params = self.normalizer.normalize_params([fluid_params])[0]
         
         if self.augment:
             if random.random() < 0.5:
@@ -131,6 +132,6 @@ class BubbleForecast(Dataset):
         return make_data(
             input=inp_data.float(),
             target=out_data.float(),
-            fluid_params_dict=self.fluid_params[file_idx],
+            fluid_params_dict=fluid_params,
             downsample_factor=1
         )

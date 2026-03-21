@@ -71,6 +71,20 @@ def is_number(value: any) -> bool:
     except:
         return False
 
+# Do not want to normalize data regarding the grid resolution.
+KEYS_TO_EXCLUDE = [
+    "num_blocks_x",
+    "num_blocks_y",
+    "nx_block",
+    "ny_block",
+    "dx",
+    "dy",
+    "x_min",
+    "x_max",
+    "y_min",
+    "y_max",
+]
+
 def dict_normalize_helper(dict_to_normalize: dict, func: Callable, min_dict: dict, max_dict: dict) -> dict:
     r"""
     Normalizes all numeric fields in the `dict_to_normalize`. Applied recursively to nested dictionaries.
@@ -78,6 +92,9 @@ def dict_normalize_helper(dict_to_normalize: dict, func: Callable, min_dict: dic
     """
     normalized_dict = {}
     for key, value in dict_to_normalize.items():
+        if key in KEYS_TO_EXCLUDE:
+            normalized_dict[key] = value
+            continue
         if isinstance(value, dict):
             normalized_dict[key] = dict_normalize_helper(value, func, min_dict[key], max_dict[key])
         elif is_number(value):
