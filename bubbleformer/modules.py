@@ -144,6 +144,7 @@ class ForecastModule(L.LightningModule):
     def configure_optimizers(self):
         opt_name = self.optimizer_cfg["name"]
         opt_params = self.optimizer_cfg["params"]
+        opt_params["lr"] = torch.tensor(opt_params["lr"]) # wrap in tensor to avoid recompiles
         if opt_name == "adamw":
             optimizer = [AdamW(self.model.parameters(), **opt_params, fused=True)]
         elif opt_name == "adam":
@@ -349,6 +350,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         Since our batch is in a dataclass, pytorch and lightning cannot figure out how to pin memory and
         asynchrously transfer the batch to the device. So, we do this manually.
         """
+        batch.fluid_params_tensor = batch.get_fluid_params_tensor('cpu')
         pinned_batch = batch.pin_memory()
         return pinned_batch.to(device, non_blocking=True)
 
@@ -388,9 +390,11 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             for opt in optimizers:
                 opt.zero_grad()
             self.manual_backward(loss)
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             for opt in optimizers:
                 opt.step()
+            # global_step is incremented by the number of optimizers. Subtract 1 to get the training step.
+            self.global_step -= len(optimizers) - 1
 
             # MANUALLY APPLY SCHEDULER
             schedulers = self.lr_schedulers()
@@ -408,11 +412,15 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         if router_with_loss:
             log_dict["train_moe/routing_loss"] = router_loss
 
-        # Log less freuently--has non-trivial runtime overhead.
+        # compute expensive metrics less frequently--has non-trivial runtime overhead.
         if self.global_step % 100 == 0:
             with torch.no_grad():
                 log_dict["train/input_mean"] = inp.input.mean().item()
                 log_dict["train/input_std"] = inp.input.std().item()
+                log_dict["train/target_diff_mean"] = (batch.target - inp.input).mean().item()
+                log_dict["train/target_diff_std"] = (batch.target - inp.input).std().item()
+                log_dict["train/pred_diff_mean"] = (pred - inp.input).mean().item()
+                log_dict["train/pred_diff_std"] = (pred - inp.input).std().item()
                 log_dict = self.moe_metrics(moe_outputs, log_dict, "train")
 
         self.default_log_dict(log_dict)

@@ -79,17 +79,15 @@ class MoEBase(nn.Module):
         fluid_params: (B, num_fluid_params)
         """
         x = batch.input
-        fluid_params = batch.fluid_params_tensor(x.device)        
         input = x
         assert input.dtype == torch.float32
-        assert fluid_params.dtype == torch.float32
         
         with record_function("encode"):
             x = self.embed(x)
         embed = x
 
         with record_function("film_embed"):
-            x = self.film_embed(x, fluid_params)
+            x = self.film_embed(x, batch.fluid_params_tensor)
         fluid_embed = x
         
         # Get axial frequencies for rotary embedding.

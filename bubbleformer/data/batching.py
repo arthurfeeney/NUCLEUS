@@ -36,6 +36,7 @@ class CollatedBatch:
     dx: torch.Tensor
     dy: torch.Tensor
     rollout_steps: Optional[torch.Tensor] = None
+    fluid_params_tensor: Optional[torch.Tensor] = None
     
     def pin_memory(self):
         return CollatedBatch(
@@ -46,7 +47,8 @@ class CollatedBatch:
             y_grid=self.y_grid.pin_memory(),
             dx=self.dx.pin_memory(),
             dy=self.dy.pin_memory(),
-            rollout_steps=self.rollout_steps
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor.pin_memory() if self.fluid_params_tensor is not None else None,
         )
     
     def to(self, device: torch.device, non_blocking: bool = False):
@@ -58,7 +60,8 @@ class CollatedBatch:
             y_grid=self.y_grid.to(device, non_blocking=non_blocking),
             dx=self.dx.to(device, non_blocking=non_blocking),
             dy=self.dy.to(device, non_blocking=non_blocking),
-            rollout_steps=self.rollout_steps
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor.to(device, non_blocking=non_blocking) if self.fluid_params_tensor is not None else None,
         )
         
     def detach(self):
@@ -70,7 +73,8 @@ class CollatedBatch:
             y_grid=self.y_grid.detach(),
             dx=self.dx.detach(),
             dy=self.dy.detach(),
-            rollout_steps=self.rollout_steps
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor.detach() if self.fluid_params_tensor is not None else None,
         )
     
     def get_input(self):
@@ -86,7 +90,8 @@ class CollatedBatch:
             y_grid=self.y_grid,
             dx=self.dx,
             dy=self.dy,
-            rollout_steps=self.rollout_steps
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor
         )
         
     def fliplr(self):
@@ -99,7 +104,8 @@ class CollatedBatch:
             y_grid=self.y_grid,
             dx=self.dx,
             dy=self.dy,
-            rollout_steps=self.rollout_steps
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor
         )
         
     def noise(self, scale):
@@ -112,79 +118,42 @@ class CollatedBatch:
             y_grid=self.y_grid,
             dx=self.dx,
             dy=self.dy,
-            rollout_steps=self.rollout_steps
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor
         )
     
     def normalize(self, normalizer: Normalizer):
         return CollatedBatch(
             input=normalizer.normalize(self.input, self.get_temps()[0]),
             target=normalizer.normalize(self.target, self.get_temps()[0]),
-            fluid_params_dict=self.fluid_params_dict,
+            fluid_params_dict=normalizer.normalize_params(self.fluid_params_dict),
             x_grid=self.x_grid,
             y_grid=self.y_grid,
+            dx=self.dx,
+            dy=self.dy,
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor
         )
     
     def unnormalize(self, normalizer: Normalizer):
         return CollatedBatch(
             input=normalizer.unnormalize(self.input, self.get_temps()[0]),
             target=normalizer.unnormalize(self.target, self.get_temps()[0]),
-            fluid_params_dict=self.fluid_params_dict,
-        )
-        
-    def gaussian_noise(self, sdf_scale: float, temp_scale: float, vel_scale: float):
-        sdf_noise = torch.normal(0, sdf_scale, self.input[:, :, 0].shape, device=self.input.device)
-        temp_noise = torch.normal(0, temp_scale, self.input[:, :, 1].shape, device=self.input.device)
-        velx_noise = torch.normal(0, vel_scale, self.input[:, :, 2].shape, device=self.input.device)
-        vely_noise = torch.normal(0, vel_scale, self.input[:, :, 3].shape, device=self.input.device)
-        noisy_input = torch.stack([
-            self.input[..., 0] + sdf_noise,
-            self.input[..., 1] + temp_noise,
-            self.input[..., 2] + velx_noise,
-            self.input[..., 3] + vely_noise,
-        ], dim=2)
-        return CollatedBatch(
-            input=noisy_input,
-            target=self.target,
-            fluid_params_dict=self.fluid_params_dict,
+            fluid_params_dict=normalizer.unnormalize_params(self.fluid_params_dict),
             x_grid=self.x_grid,
             y_grid=self.y_grid,
             dx=self.dx,
             dy=self.dy,
-            rollout_steps=self.rollout_steps
+            rollout_steps=self.rollout_steps,
+            fluid_params_tensor=self.fluid_params_tensor
         )
         
     def get_temps(self):
         bulk_temp = torch.tensor([d["bulk_temp"] for d in self.fluid_params_dict], device=self.input.device)
         heater_temp = torch.tensor([d["heater"]["wallTemp"] for d in self.fluid_params_dict], device=self.input.device)
         return bulk_temp, heater_temp
-
-    def normalize(self, normalizer: Normalizer):
-        bulk_temp, heater_temp = self.get_temps()
-        return CollatedBatch(
-            input=normalizer.normalize(self.input, bulk_temp),
-            target=normalizer.normalize(self.target, bulk_temp),
-            fluid_params_dict=normalizer.normalize_params(self.fluid_params_dict),
-            x_grid=self.x_grid,
-            y_grid=self.y_grid,
-            dx=self.dx,
-            dy=self.dy,
-            rollout_steps=self.rollout_steps
-        )
-    
-    def unnormalize(self, normalizer: Normalizer):
-        bulk_temp, heater_temp = self.get_temps()
-        return CollatedBatch(
-            input=normalizer.unnormalize(self.input, bulk_temp),
-            target=normalizer.unnormalize(self.target, bulk_temp),
-            fluid_params_dict=normalizer.unnormalize_params(self.fluid_params_dict),
-            x_grid=self.x_grid,
-            y_grid=self.y_grid,
-            dx=self.dx,
-            dy=self.dy,
-            rollout_steps=self.rollout_steps
-        )
-        
-    def fluid_params_tensor(self, device):
+            
+    def get_fluid_params_tensor(self, device):
         return torch.tensor(
             [
                 (
