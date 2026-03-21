@@ -9,29 +9,6 @@ from bubbleformer.layers.attention import (
     SpatialAxialAttention,
 )
 
-class SpaceTimeNeighborAttention(nn.Module):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int
-    ):
-        super().__init__()
-        
-        self.temporal = TemporalAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )
-
-        self.spatial = SpatialNeighborhoodAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.temporal(x)
-        x = self.spatial(x)
-        return x
-    
 class SpaceTimeAttention(nn.Module):
     def __init__(
         self,
@@ -45,35 +22,40 @@ class SpaceTimeAttention(nn.Module):
             num_heads=num_heads,
         )
         
-        self.spatial = SpatialAttention(
+        self.attention = SpatialAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.temporal(x)
-        x = self.spatial(x)
+        x = self.attention(x)
+        return x
+
+class SpaceTimeNeighborAttention(SpaceTimeAttention):
+    def __init__(self, embed_dim: int, num_heads: int):
+        super().__init__(embed_dim, num_heads)
+        
+        self.attention = SpatialNeighborhoodAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.temporal(x)
+        x = self.attention(x)
         return x
     
-class SpaceTimeAxialAttention(nn.Module):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int
-    ):
-        super().__init__()
+class SpaceTimeAxialAttention(SpaceTimeAttention):
+    def __init__(self, embed_dim: int, num_heads: int):
+        super().__init__(embed_dim, num_heads)
         
-        self.temporal = TemporalAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )
-        
-        self.axial = SpatialAxialAttention(
+        self.attention = SpatialAxialAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.temporal(x)
-        x = self.axial(x)
+        x = self.attention(x)
         return x
