@@ -22,7 +22,7 @@ from lightning.pytorch.plugins.environments import SLURMEnvironment
 
 from bubbleformer.data.batching import collate
 from bubbleformer.data.normalize import get_normalizer
-from bubbleformer.data import BubbleForecast, DownsampledBubbleForecast
+from bubbleformer.data import BubbleForecast, InMemDataset
 from bubbleformer.modules import get_train_module
 from bubbleformer.utils.set_fp32_precision import set_fp32_precision
 from bubbleformer.utils.parameter_count import count_model_parameters
@@ -116,7 +116,7 @@ def main(cfg: DictConfig) -> None:
         config=OmegaConf.to_container(cfg),
     )
 
-    dataset = DownsampledBubbleForecast if "64" in cfg.data_cfg.dataset else BubbleForecast
+    dataset = InMemDataset if "64" in cfg.data_cfg.dataset else BubbleForecast
     
     normalizer = get_normalizer(OmegaConf.to_container(cfg.normalizer_cfg, resolve=True))
 
@@ -146,7 +146,7 @@ def main(cfg: DictConfig) -> None:
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=10,
         pin_memory=True,
         prefetch_factor=2,
@@ -201,14 +201,14 @@ def main(cfg: DictConfig) -> None:
         strategy="auto",
         max_epochs=cfg.max_epochs,
         max_steps=cfg.max_steps,
+        val_check_interval=cfg.val_check_interval,
         log_every_n_steps=100,
-        #accumulate_grad_batches=cfg.accumulate_grad_batches,
+        accumulate_grad_batches=cfg.accumulate_grad_batches,
         logger=logger,
         default_root_dir=cfg.log_dir,
         plugins=[SLURMEnvironment(requeue_signal=signal.SIGHUP)],
         enable_model_summary=True,
         num_sanity_val_steps=0,
-        #precision="bf16-mixed",
         callbacks=[
             ModelSummary(max_depth=-1), 
             ModelCheckpoint(
@@ -217,6 +217,7 @@ def main(cfg: DictConfig) -> None:
                 mode="min",
                 save_top_k=2,
                 save_last=True,
+                every_n_train_steps=20000,
                 save_on_exception=True
             ),
             progress_bar
@@ -242,7 +243,7 @@ def main(cfg: DictConfig) -> None:
         train_dataloaders=train_dataloader,
         val_dataloaders=val_dataloader
     )
-        
+
     #prof.export_memory_timeline("memory_timeline.html", device="cuda:0")
     #prof.export_chrome_trace("trace.json")
     #print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))

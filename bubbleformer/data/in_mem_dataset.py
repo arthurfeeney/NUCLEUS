@@ -3,13 +3,15 @@ import json
 import dataclasses
 import numpy as np
 import h5py as h5
+import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 from bubbleformer.data.batching import Data
 from bubbleformer.data.batching import make_data
+from bubbleformer.data.normalize import Normalizer
 
-class DownsampledBubbleForecast(Dataset):
+class InMemDataset(Dataset):
     """
     Dataset class for time series forecasting on the BubbleML dataset.
     This downsamples the full dataset and stores it in cpu memory. This can be
@@ -24,19 +26,18 @@ class DownsampledBubbleForecast(Dataset):
         history_time_window: int,
         time_step: int,
         start_time: int,
-        norm: str = "none",
-        downsample_factor: int = 1,
-        return_fluid_params: bool = False,
+        normalizer: Optional[Normalizer],
+        augment: bool = False,
     ):
         super().__init__()
         self.filenames = filenames
-        self.norm = norm
-        self.downsample_factor = downsample_factor
         
         self.future_time_window = future_time_window
         self.history_time_window = history_time_window
         self.time_step = time_step
         self.start_time = start_time
+        self.normalizer = normalizer
+        self.augment = augment
         
         if input_fields is not None:
             self.input_fields = input_fields
@@ -55,14 +56,13 @@ class DownsampledBubbleForecast(Dataset):
         self.diff_terms = {k:[] for k in self.fields}
         self.div_terms = {k:[] for k in self.fields}
 
-        self.return_fluid_params = return_fluid_params
-        if self.return_fluid_params:
-            fluid_params_files = [fname.replace(".hdf5", ".json") for fname in filenames]
-            self.fluid_params = []
-            for fluid_params_file in fluid_params_files:
-                with open(fluid_params_file, "r", encoding="utf-8") as f:
-                    fluid_params = json.load(f)
-                self.fluid_params.append(fluid_params)
+
+        fluid_params_files = [fname.replace(".hdf5", ".json") for fname in filenames]
+        self.fluid_params = []
+        for fluid_params_file in fluid_params_files:
+            with open(fluid_params_file, "r", encoding="utf-8") as f:
+                fluid_params = json.load(f)
+            self.fluid_params.append(fluid_params)
 
     def _load_data(self):
         hdf5_files = [h5.File(filename, "r") for filename in self.filenames]
@@ -71,14 +71,6 @@ class DownsampledBubbleForecast(Dataset):
             d = {}
             for field in self.fields:
                 field_data = torch.tensor(hdf5_file[field][...])
-                if self.downsample_factor > 1:
-                    _, h, w = field_data.shape
-                    new_h, new_w = h // self.downsample_factor, w // self.downsample_factor
-                    field_data = F.interpolate(
-                        field_data.unsqueeze(1),
-                        size=(new_h, new_w),
-                        mode="bicubic"
-                    ).squeeze(1)
                 d[field] = field_data
             data.append(d)
         return data
@@ -119,13 +111,26 @@ class DownsampledBubbleForecast(Dataset):
             data_item = torch.tensor(self.data[file_idx][field][out_slice])
             out_data.append(data_item)
 
-        inp_data = torch.stack(inp_data) # (in_C, T, H, W)
-        out_data = torch.stack(out_data) # (out_C, T, H, W)
-
+        inp_data = torch.stack(inp_data, dim=-1) # (T, H, W, C)
+        out_data = torch.stack(out_data, dim=-1) # (T, H, W, C)
+        
+        fluid_params = self.fluid_params[file_idx]
+        bulk_temp = int(fluid_params["bulk_temp"])
+        
+        if self.normalizer is not None:
+            inp_data = self.normalizer.normalize(inp_data, bulk_temp)
+            out_data = self.normalizer.normalize(out_data, bulk_temp)
+            fluid_params = self.normalizer.normalize_params([fluid_params])[0]
+        
+        if self.augment:
+            if random.random() < 0.5:
+                # [T H W C], we flip along the width (dim=2)
+                inp_data = torch.flip(inp_data, dims=[2])
+                out_data = torch.flip(out_data, dims=[2])
 
         return make_data(
-            input=inp_data.float().permute(1, 0, 2, 3),
-            target=out_data.float().permute(1, 0, 2, 3),
-            fluid_params_dict=self.fluid_params[file_idx],
-            downsample_factor=self.downsample_factor
+            input=inp_data.float(),
+            target=out_data.float(),
+            fluid_params_dict=fluid_params,
+            downsample_factor=1
         )
