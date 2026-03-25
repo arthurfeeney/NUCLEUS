@@ -58,8 +58,13 @@ class ForecastModule(L.LightningModule):
 
         self.criterion = torch.nn.L1Loss()
 
+        self.load_balance_loss_weight = self.model_cfg["params"].get("load_balance_loss_weight")
+        self.z_loss_weight = self.model_cfg["params"].get("z_loss_weight")
+
         self.model_cfg["params"]["input_fields"] = len(self.data_cfg["input_fields"])
         self.model_cfg["params"]["output_fields"] = len(self.data_cfg["output_fields"])
+        del self.model_cfg["params"]["load_balance_loss_weight"]
+        del self.model_cfg["params"]["z_loss_weight"]
         self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
         if self.checkpoint_path is not None:
             model_data = torch.load(self.checkpoint_path, weights_only=False)
@@ -75,6 +80,7 @@ class ForecastModule(L.LightningModule):
         self.validation_sample = None
         self.train_start_time = None
         self.val_start_time = None
+        self._train_iter_prev_perf: Optional[float] = None
 
         # If we're using Muon, we need two optimizers Muon for 2d
         # parameters, and AdamW for everything else. Using multiple
@@ -172,16 +178,21 @@ class ForecastModule(L.LightningModule):
                             last_epoch=self.trainer.global_step - 1
                         )]
         elif scheduler_name == "trapezoidal":
-            warmup_iters = scheduler_params["warmup_pct"] * self.t_max
-            cooldown_iters = scheduler_params["cooldown_pct"] * self.t_max
-            flat_iters = self.t_max - warmup_iters - cooldown_iters
+            # warmup and cooldown are percentages if floats. Otherwise, total steps.
+            warmup = scheduler_params["warmup"]
+            cooldown = scheduler_params["cooldown"]
+            if isinstance(warmup, float):
+                warmup = warmup * self.t_max
+            if isinstance(cooldown, float):
+                cooldown = cooldown * self.t_max
+            flat_iters = self.t_max - warmup - cooldown
             scheduler = [{
                     "scheduler": TrapezoidalLR(
                         optimizer[idx],
                         scale_factor=scheduler_params["scale_factor"],
-                        warmup_iters=warmup_iters,
+                        warmup_iters=warmup,
                         flat_iters=flat_iters,
-                        cooldown_iters=cooldown_iters,
+                        cooldown_iters=cooldown,
                         last_epoch=self.trainer.global_step - 1
                     ),
                     "interval": "step",
@@ -195,6 +206,22 @@ class ForecastModule(L.LightningModule):
 
     def on_train_epoch_start(self):
         self.train_start_time = time.time()
+        self._train_iter_prev_perf = None
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        now = time.perf_counter()
+        if self._train_iter_prev_perf is not None:
+            dt = now - self._train_iter_prev_perf
+            if dt > 0 and self.trainer.is_global_zero:
+                self.log(
+                    "train/iteration_per_second",
+                    1.0 / dt,
+                    on_step=True,
+                    on_epoch=False,
+                    prog_bar=True,
+                    sync_dist=False,
+                )
+        self._train_iter_prev_perf = now
 
     def on_train_epoch_end(self):
         if self.train_start_time is not None: # when resuming from middle of epoch, var is None
@@ -315,11 +342,18 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             scheduler_cfg=scheduler_cfg,
             log_wandb=log_wandb,
         )
-        self.noise_scales = torch.linspace(0.01, 1, 500).tolist()
 
     def moe_metrics(self, moe_outputs, log_dict: dict, prefix: str) -> dict:
         for moe_idx, moe_output in enumerate(moe_outputs):
             tpe = moe_output.router_output.tokens_per_expert.float()
+
+            # check the mean router logit
+            mean_router_logit = moe_output.router_output.router_logits.mean()
+            log_dict[f"{prefix}_moe/mean_router_logit_layer{moe_idx}"] = mean_router_logit.item()
+
+            # check the max router logit
+            max_router_logit = moe_output.router_output.router_logits.abs().max()
+            log_dict[f"{prefix}_moe/max_router_logit_layer{moe_idx}"] = max_router_logit.item()
 
             # perfect balance is 0, while 1 is imbalanced.
             coeff_of_variation = (tpe.std() / tpe.mean()).item()
@@ -354,26 +388,41 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         pinned_batch = batch.pin_memory()
         return pinned_batch.to(device, non_blocking=True)
 
+    def get_noise_scale(self):
+        max_noise_scale = 1.0
+        # During learning rate warmup, no noise is added.
+        if self.global_step < self.scheduler_cfg["params"]["warmup"]:
+            return 0.0
+        # ramp up noise scale in first half of training.
+        elif self.global_step < self.t_max // 2:
+            max_scale_at_step = max_noise_scale * (self.global_step / (self.t_max // 2))
+            return random.uniform(0, max_scale_at_step)
+        else:
+            return random.uniform(0, max_noise_scale)
+
     def training_step(
         self,
         batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
+        batch.noise_(self.get_noise_scale())
         inp = batch.get_input()
+        torch.compiler.cudagraph_mark_step_begin()
         pred, moe_outputs = self.model(inp)
+        torch.compiler.cudagraph_mark_step_end()
 
         data_loss = self.criterion(pred, batch.target)
 
         # use router loss to do load balancing.
-        router_with_loss = moe_outputs[0].router_output.router_type() == "loss"
+        router_with_loss = moe_outputs[0].router_output.router_type() in ("loss", "bias")
         if router_with_loss:
-            router_loss = sum(moe_output.router_output.load_balance_loss for moe_output in moe_outputs)
-            loss = data_loss + router_loss
+            router_load_balance_loss = sum(moe_output.router_output.load_balance_loss for moe_output in moe_outputs)
+            router_z_loss = sum(moe_output.router_output.z_loss for moe_output in moe_outputs)
+            loss = data_loss + (router_load_balance_loss * self.load_balance_loss_weight) + (router_z_loss * self.z_loss_weight)
         else:
             loss = data_loss
 
         # using router bias to update the router.
-        # TODO: perhaps this is better done in MoE module itself, during the forward pass?
         router_with_bias = moe_outputs[0].router_output.router_type() == "bias"
         if router_with_bias:
             router_idx = 0
@@ -393,7 +442,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             for opt in optimizers:
                 opt.step()
-            # global_step is incremented by the number of optimizers. 
+            # global_step is incremented by the number of optimizers.
             # Subtracting to get the actual training step.
             self.global_step -= len(optimizers) - 1
 
@@ -411,7 +460,8 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             "train/learning_rate": self.get_current_lr(),
         }
         if router_with_loss:
-            log_dict["train_moe/routing_loss"] = router_loss
+            log_dict["train_moe/load_balance_loss"] = router_load_balance_loss
+            log_dict["train_moe/z_loss"] = router_z_loss
 
         # compute expensive metrics less frequently--has non-trivial runtime overhead.
         if self.global_step % 100 == 0:
@@ -433,7 +483,6 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
-        batch = batch.normalize(self.normalizer)
         inp = batch.get_input()
         pred, moe_outputs = self.model(inp)
         loss = self.criterion(pred, batch.target)

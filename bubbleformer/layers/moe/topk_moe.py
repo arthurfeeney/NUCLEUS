@@ -27,6 +27,9 @@ def load_balance_loss(
     loss = torch.dot(mean_tokens_per_expert, mean_router_prob_per_expert) * num_experts
     return loss
 
+def z_loss(router_logits: torch.Tensor):
+    return (torch.logsumexp(router_logits, dim=-1) ** 2).mean()
+
 def get_token_indices(
     topk_expert_indices: torch.Tensor, 
     num_experts: int
@@ -50,6 +53,8 @@ class RouterOutput:
     group_indices: torch.Tensor
     indices: torch.Tensor
     tokens_per_expert: torch.Tensor
+    load_balance_loss: torch.Tensor
+    z_loss: torch.Tensor
     
     def router_type(self):
         return None
@@ -62,6 +67,8 @@ class RouterOutput:
             group_indices=self.group_indices.to(device),
             indices=self.indices.to(device),
             tokens_per_expert=self.tokens_per_expert.to(device),
+            load_balance_loss=self.load_balance_loss.to(device),
+            z_loss=self.z_loss.to(device),
         )
     
     def detach(self):
@@ -72,6 +79,8 @@ class RouterOutput:
             group_indices=self.group_indices.detach(),
             indices=self.indices.detach(),
             tokens_per_expert=self.tokens_per_expert.detach(),
+            load_balance_loss=self.load_balance_loss.detach(),
+            z_loss=self.z_loss.detach(),
         )
     
 class RouterBase(nn.Module):
@@ -96,20 +105,22 @@ class RouterBase(nn.Module):
         # scale is chosen to be smaller than typical default initalization,
         # smaller inital parameters should result in better initial load balance.
         with torch.no_grad():
-            self.router.weight.data.normal_(0, 0.001)
+            self.router.weight.data.normal_(0, 0.01)
         
     def forward(self, x, router_bias: Optional[torch.Tensor] = None):       
         router_logits = self.router(x)
+
+        score = torch.clamp(router_logits, min=-2, max=2)
+        
         if router_bias is not None:
-            router_logits = router_logits + router_bias[None, :]
+            biased_score = score + router_bias[None, :]
+            _, topk_indices = torch.topk(biased_score, k=self.topk, dim=-1)
+            topk_scores = torch.gather(score, dim=-1, index=topk_indices)
+        else:
+            topk_scores, topk_indices = torch.topk(score, k=self.topk, dim=-1)
         
-        if self.softmax_first:
-            router_probs = F.softmax(router_logits, dim=-1)
-            topk_probs, topk_indices = torch.topk(router_probs, k=self.topk, dim=-1)
-        else:        
-            topk_logits, topk_indices = torch.topk(router_logits, k=self.topk, dim=-1)
-            topk_probs = F.softmax(topk_logits, dim=-1)
-        
+        topk_probs = F.softmax(topk_scores, dim=-1)
+                
         group_indices, indices, tokens_per_expert = get_token_indices(topk_indices, self.num_experts)
         
         return RouterOutput(
@@ -119,12 +130,17 @@ class RouterBase(nn.Module):
             group_indices=group_indices,
             indices=indices,
             tokens_per_expert=tokens_per_expert,
+            load_balance_loss=load_balance_loss(
+                router_logits, 
+                tokens_per_expert, 
+                self.topk, 
+                self.num_experts
+            ),
+            z_loss=z_loss(router_logits),
         )
-    
+
 @dataclass
-class TopkRouterWithLossOutput(RouterOutput):
-    load_balance_loss: torch.Tensor
-    
+class TopkRouterWithLossOutput(RouterOutput):    
     def router_type(self):
         return "loss"
     
@@ -134,20 +150,12 @@ class TopkRouterWithLoss(RouterBase):
         num_experts: int,
         hidden_dim: int,
         topk: int,
-        load_balance_loss_weight: float,
         softmax_first: bool,
     ):
         super().__init__(num_experts, hidden_dim, topk, softmax_first)
-        self.load_balance_loss_weight = load_balance_loss_weight
 
     def forward(self, x):
         router_output = super().forward(x)
-        loss = self.load_balance_loss_weight * load_balance_loss(
-            router_output.router_logits, 
-            router_output.tokens_per_expert, 
-            self.topk, 
-            self.num_experts
-        )
         return TopkRouterWithLossOutput(
             router_logits=router_output.router_logits,
             topk_probs=router_output.topk_probs,
@@ -155,7 +163,8 @@ class TopkRouterWithLoss(RouterBase):
             group_indices=router_output.group_indices,
             indices=router_output.indices,
             tokens_per_expert=router_output.tokens_per_expert,
-            load_balance_loss=loss,
+            load_balance_loss=router_output.load_balance_loss,
+            z_loss=router_output.z_loss,
         )
         
 @dataclass
@@ -200,6 +209,8 @@ class TopkRouterWithBias(RouterBase):
             indices=router_output.indices,
             tokens_per_expert=router_output.tokens_per_expert,
             router_bias=self.router_bias,
+            load_balance_loss=router_output.load_balance_loss,
+            z_loss=router_output.z_loss,
         )
         
 @dataclass
@@ -271,7 +282,9 @@ class TopkMoE(nn.Module):
         # NOTE with torch.compile(fullgraph=True), the grouped gemm kernel does not support torch.float32, 
         # so the input data has to be truncated to bfloat 16.
         groups = x.to(torch.bfloat16)[router_output.indices // self.topk]        
-        # Compute all of the experts
+
+        # On ampere, grouped_mm has a host-device transfer, so it's not cuda-graph-able.
+        # (The offsets are moved to the CPU, and then moved back to the device when iterating over each gemm.)
         groups = torch.nn.functional.grouped_mm(groups, self.w1.mT, offs=router_output.group_indices)
         groups = F.gelu(groups)
         groups = torch.nn.functional.grouped_mm(groups, self.w2.mT, offs=router_output.group_indices)

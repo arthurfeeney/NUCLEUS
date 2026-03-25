@@ -108,19 +108,9 @@ class CollatedBatch:
             fluid_params_tensor=self.fluid_params_tensor
         )
         
-    def noise(self, scale):
-        noise = torch.normal(0, scale, self.input.shape, device=self.input.device)
-        return CollatedBatch(
-            input=self.input + noise,
-            target=self.target,
-            fluid_params_dict=self.fluid_params_dict,
-            x_grid=self.x_grid,
-            y_grid=self.y_grid,
-            dx=self.dx,
-            dy=self.dy,
-            rollout_steps=self.rollout_steps,
-            fluid_params_tensor=self.fluid_params_tensor
-        )
+    def noise_(self, scale):
+        with torch.no_grad():
+            self.input += torch.normal(0, scale, self.input.shape, device=self.input.device)
     
     def normalize(self, normalizer: Normalizer):
         return CollatedBatch(
