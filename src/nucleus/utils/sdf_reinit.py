@@ -5,7 +5,6 @@ _sdf_reinit_cpp = load(
     "sdf_reinit",
     sources=["csrc/sdf_reinit.cpp"],
     extra_cflags=["-O3"],
-    extra_link_args=["-fopenmp"],
     verbose=True
 )
 
