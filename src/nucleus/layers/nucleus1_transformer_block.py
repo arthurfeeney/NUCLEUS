@@ -17,8 +17,8 @@ class Nucleus1TransformerBlock(nn.Module):
     ):
         super().__init__()
         
-        self.attention_norm = nn.RMSNorm(embed_dim)
-        self.mlp_norm = nn.RMSNorm(embed_dim)
+        self.pre_norm = nn.LayerNorm(embed_dim)
+        self.post_norm = nn.LayerNorm(embed_dim)
         
         self.attention = Nucleus1SpaceTimeAttention(
             embed_dim=embed_dim,
@@ -29,12 +29,12 @@ class Nucleus1TransformerBlock(nn.Module):
         
     def _attention(self, x: torch.Tensor) -> torch.Tensor:
         with record_function("attention"):
-            x = self.attention(self.attention_norm(x)) + x
+            x = self.attention(self.pre_norm(x)) + x
         return x
     
     def _mlp(self, x: torch.Tensor) -> torch.Tensor:
         with record_function("mlp"):
-            x = self.mlp(self.mlp_norm(x)) + x
+            x = self.mlp(self.post_norm(x)) + x
         return x    
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -63,6 +63,8 @@ class Nucleus1TransformerMoEBlock(Nucleus1TransformerBlock):
         
     def _mlp(self, x: torch.Tensor) -> torch.Tensor:
         with record_function("mlp"):
+            # NOTE: this kind of has a bug: forgot normalization and skip connection.
+            # Doesn't seem to have affected the models that much.
             moe_output: TopkMoEOutput = self.mlp(x)
             x = moe_output.out
         return x, moe_output

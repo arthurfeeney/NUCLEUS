@@ -186,26 +186,44 @@ class StandardNormalizer(Normalizer):
         else:
             bt = bulk_temp
         return temp * self.constants.temp_std + self.constants.temp_mean + bt
-
+    
+class NoNormalizer(Normalizer):
+    def __init__(self):
+        super().__init__(None)
+    
+    def normalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
+        return data
+    
+    def unnormalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
+        return data
+    
+    def normalize_params(self, fluid_params_dicts: List[dict]) -> List[dict]:
+        return fluid_params_dicts
+    
+    def unnormalize_params(self, fluid_params_dicts: List[dict]) -> List[dict]:
+        return fluid_params_dicts
+    
 def get_normalizer(normalizer_cfg: dict) -> Normalizer:
-    constants = NormalizerConstants(
-        max_domain_size=normalizer_cfg["max_domain_size"],
-        sdf_mean=normalizer_cfg["sdf_mean"],
-        sdf_std=normalizer_cfg["sdf_std"],
-        absmax_temp=normalizer_cfg["absmax_temp"],
-        temp_mean=normalizer_cfg["temp_mean"],
-        temp_std=normalizer_cfg["temp_std"],
-        velx_mean=normalizer_cfg["velx_mean"],
-        velx_std=normalizer_cfg["velx_std"],
-        vely_mean=normalizer_cfg["vely_mean"],
-        vely_std=normalizer_cfg["vely_std"],
-        numeric_fluid_params_min=normalizer_cfg["fluid_params_min"],
-        numeric_fluid_params_max=normalizer_cfg["fluid_params_max"],
-    )
     if normalizer_cfg["name"] == "standard":
+        constants = NormalizerConstants(
+            max_domain_size=normalizer_cfg["max_domain_size"],
+            sdf_mean=normalizer_cfg["sdf_mean"],
+            sdf_std=normalizer_cfg["sdf_std"],
+            absmax_temp=normalizer_cfg["absmax_temp"],
+            temp_mean=normalizer_cfg["temp_mean"],
+            temp_std=normalizer_cfg["temp_std"],
+            velx_mean=normalizer_cfg["velx_mean"],
+            velx_std=normalizer_cfg["velx_std"],
+            vely_mean=normalizer_cfg["vely_mean"],
+            vely_std=normalizer_cfg["vely_std"],
+            numeric_fluid_params_min=normalizer_cfg["fluid_params_min"],
+            numeric_fluid_params_max=normalizer_cfg["fluid_params_max"],
+        )
         return StandardNormalizer(constants)
+    if normalizer_cfg["name"] == "no":
+        return NoNormalizer()
     else:
-        raise ValueError(f"Unknown normalizer: {normalizer_cfg.name}")
+        raise ValueError(f"Unknown normalizer: {normalizer_cfg["name"]}")
 
 class RunningVariance:
     def __init__(self, bins: int, range: tuple[float, float]):

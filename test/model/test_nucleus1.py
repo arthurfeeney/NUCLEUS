@@ -50,7 +50,8 @@ def test_nucleus1_moe(device, model_name):
     assert output.shape == (4, 8, 4, 64, 64)
     assert torch.all(torch.isfinite(output))
     
-    loss = output.sum()
+    moe_loss = sum([m.load_balance_loss for m in moe_output])
+    loss = output.sum() + moe_loss
     loss.backward()
     for param in model.parameters():
         if param.grad is not None:
