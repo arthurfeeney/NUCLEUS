@@ -1,11 +1,15 @@
 import torch
 import torch.nn as nn
-from nucleus.layers.space_time_attention import SpaceTimeNeighborAttention, SpaceTimeAttention, SpaceTimeAxialAttention
+from nucleus.layers.nucleus1_space_time_attention import (
+    Nucleus1SpaceTimeNeighborAttention, 
+    Nucleus1SpaceTimeAttention, 
+    Nucleus1SpaceTimeAxialAttention,
+)
 from nucleus.layers.mlp import GeluMLP
 from nucleus.layers.moe.nucleus1_topk_moe import TopkMoE, TopkMoEOutput
 from torch.profiler import record_function
 
-class TransformerBlock(nn.Module):
+class Nucleus1TransformerBlock(nn.Module):
     def __init__(
         self,
         embed_dim: int,
@@ -16,7 +20,7 @@ class TransformerBlock(nn.Module):
         self.attention_norm = nn.RMSNorm(embed_dim)
         self.mlp_norm = nn.RMSNorm(embed_dim)
         
-        self.attention = SpaceTimeAttention(
+        self.attention = Nucleus1SpaceTimeAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
@@ -38,7 +42,7 @@ class TransformerBlock(nn.Module):
         x = self._mlp(x)
         return x
     
-class TransformerMoEBlock(TransformerBlock):
+class Nucleus1TransformerMoEBlock(Nucleus1TransformerBlock):
     def __init__(
         self,
         embed_dim: int,
@@ -68,20 +72,20 @@ class TransformerMoEBlock(TransformerBlock):
         x, moe_output = self._mlp(x)
         return x, moe_output
 
-class TransformerNeighborBlock(TransformerBlock):
+class Nucleus1TransformerNeighborBlock(Nucleus1TransformerBlock):
     def __init__(
         self,
         embed_dim: int,
         num_heads: int
     ):
         super().__init__(embed_dim, num_heads)
-        self.attention = SpaceTimeNeighborAttention(
+        self.attention = Nucleus1SpaceTimeNeighborAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
         self.mlp = GeluMLP(embed_dim)
     
-class TransformerNeighborMoEBlock(TransformerMoEBlock):
+class Nucleus1TransformerNeighborMoEBlock(Nucleus1TransformerMoEBlock):
     def __init__(
         self,
         embed_dim: int,
@@ -91,24 +95,24 @@ class TransformerNeighborMoEBlock(TransformerMoEBlock):
         load_balance_loss_weight: float,
     ):
         super().__init__(embed_dim, num_heads, num_experts, topk, load_balance_loss_weight)
-        self.attention = SpaceTimeNeighborAttention(
+        self.attention = Nucleus1SpaceTimeNeighborAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
     
-class TransformerAxialBlock(TransformerBlock):
+class Nucleus1TransformerAxialBlock(Nucleus1TransformerBlock):
     def __init__(
         self,
         embed_dim: int,
         num_heads: int
     ):
         super().__init__(embed_dim, num_heads)
-        self.attention = SpaceTimeAxialAttention(
+        self.attention = Nucleus1SpaceTimeAxialAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )    
     
-class TransformerAxialMoEBlock(TransformerMoEBlock):
+class Nucleus1TransformerAxialMoEBlock(Nucleus1TransformerMoEBlock):
     def __init__(
         self,
         embed_dim: int,
@@ -118,7 +122,7 @@ class TransformerAxialMoEBlock(TransformerMoEBlock):
         load_balance_loss_weight: float,
     ):
         super().__init__(embed_dim, num_heads, num_experts, topk, load_balance_loss_weight)
-        self.attention = SpaceTimeAxialAttention(
+        self.attention = Nucleus1SpaceTimeAxialAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )

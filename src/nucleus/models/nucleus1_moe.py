@@ -10,10 +10,10 @@ from nucleus.layers import (
     HMLPDebed,
     FiLMMLP
 )
-from nucleus.layers.nucleus1_transformer_block import (
-    TransformerMoEBlock, 
-    TransformerAxialMoEBlock, 
-    TransformerNeighborMoEBlock
+from nucleus.layers import (
+    Nucleus1TransformerMoEBlock, 
+    Nucleus1TransformerAxialMoEBlock, 
+    Nucleus1TransformerNeighborMoEBlock
 )
 
 from nucleus.data.batching import CollatedBatch
@@ -45,7 +45,7 @@ class Nucleus1MoEBase(nn.Module):
         self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
         
         self.blocks = nn.ModuleList([
-            TransformerMoEBlock(
+            Nucleus1TransformerMoEBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 num_experts=num_experts,
@@ -185,7 +185,7 @@ class Nucleus1AxialMoE(Nucleus1MoEBase):
             load_balance_loss_weight=load_balance_loss_weight,
         )
         self.blocks = nn.ModuleList([
-            TransformerAxialMoEBlock(
+            Nucleus1TransformerAxialMoEBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 num_experts=num_experts,
@@ -223,7 +223,7 @@ class Nucleus1NeighborMoE(Nucleus1MoEBase):
             load_balance_loss_weight=load_balance_loss_weight,
         )
         self.blocks = nn.ModuleList([
-            TransformerNeighborMoEBlock(
+            Nucleus1TransformerNeighborMoEBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 num_experts=num_experts,

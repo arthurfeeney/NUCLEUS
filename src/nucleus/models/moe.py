@@ -7,20 +7,14 @@ from torch.profiler import record_function
 from rotary_embedding_torch import RotaryEmbedding
 
 from nucleus.layers import (
-    HMLPEmbed, 
-    HMLPDebed,
     LinearEmbed,
     LinearDebed,
-    FiLMMLP,
     TransformerMoEBlock,
-    TransformerAxialMoEBlock,
-    TransformerNeighborMoEBlock,
-    TransformerSpatialNeighborMoEBlock
 )
 from nucleus.data.batching import CollatedBatch
 from ._api import register_model
 
-__all__ = ["ViTMoE", "AxialMoE", "NeighborMoE"]
+__all__ = ["NeighborMoE"]
 
 class MoEBase(nn.Module):
     def __init__(
@@ -109,140 +103,8 @@ class MoEBase(nn.Module):
             x = self.debed(x)
 
         return x, moe_outputs
-    
-@register_model("vit_moe")
-class ViTMoE(MoEBase):
-    def __init__(
-        self,
-        input_fields: int,
-        output_fields: int,
-        patch_size: int,
-        embed_dim: int,
-        num_heads: int,
-        processor_blocks: int,
-        num_fluid_params: int,
-        num_experts: int,
-        topk: int,
-    ):
-        super().__init__(
-            input_fields=input_fields,
-            output_fields=output_fields,
-            patch_size=patch_size,
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            processor_blocks=processor_blocks,
-            num_fluid_params=num_fluid_params,
-            num_experts=num_experts,
-            topk=topk,
-        )
-
-@register_model("axial_moe")
-class AxialMoE(MoEBase):
-    def __init__(
-        self,
-        input_fields: int,
-        output_fields: int,
-        patch_size: int,
-        embed_dim: int,
-        num_heads: int,
-        processor_blocks: int,
-        num_fluid_params: int,
-        num_experts: int,
-        topk: int,
-    ):
-        super().__init__(
-            input_fields=input_fields,
-            output_fields=output_fields,
-            patch_size=patch_size,
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            processor_blocks=processor_blocks,
-            num_fluid_params=num_fluid_params,
-            num_experts=num_experts,
-            topk=topk,
-        )
-        self.blocks = nn.ModuleList([
-            TransformerAxialMoEBlock(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                num_experts=num_experts,
-                topk=topk,
-                drop_path_prob=self.drop_path_probs[idx].item(),
-                num_fluid_params=num_fluid_params,
-            )
-            for idx in range(processor_blocks)
-        ])
-
-@register_model("spatial_neighbor_moe")
-class SpatialNeighborMoE(MoEBase):
-    def __init__(
-        self,
-        input_fields: int,
-        output_fields: int,
-        patch_size: int,
-        embed_dim: int,
-        num_heads: int,
-        processor_blocks: int,
-        num_fluid_params: int,
-        num_experts: int,
-        topk: int,
-    ):
-        super().__init__(
-            input_fields=input_fields,
-            output_fields=output_fields,
-            patch_size=patch_size,
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            processor_blocks=processor_blocks,
-            num_fluid_params=num_fluid_params,
-            num_experts=num_experts,
-            topk=topk,
-        )
-        self.blocks = nn.ModuleList([
-            TransformerSpatialNeighborMoEBlock(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                num_experts=num_experts,
-                topk=topk,
-                drop_path_prob=self.drop_path_probs[idx].item(),
-                num_fluid_params=num_fluid_params,
-            )
-            for idx in range(processor_blocks)
-        ])
 
 @register_model("neighbor_moe")
 class NeighborMoE(MoEBase):
-    def __init__(
-        self,
-        input_fields: int,
-        output_fields: int,
-        patch_size: int,
-        embed_dim: int,
-        num_heads: int,
-        processor_blocks: int,
-        num_fluid_params: int,
-        num_experts: int,
-        topk: int,
-    ):
-        super().__init__(
-            input_fields=input_fields,
-            output_fields=output_fields,
-            patch_size=patch_size,
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            processor_blocks=processor_blocks,
-            num_fluid_params=num_fluid_params,
-            num_experts=num_experts,
-            topk=topk,
-        )
-        self.blocks = nn.ModuleList([
-            TransformerNeighborMoEBlock(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                num_experts=num_experts,
-                topk=topk,
-                drop_path_prob=self.drop_path_probs[idx].item(),
-                num_fluid_params=num_fluid_params,
-            )
-            for idx in range(processor_blocks)
-        ])
+    def __init__(*args, **kwargs):
+        super().__init__(*args, **kwargs)

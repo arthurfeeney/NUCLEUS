@@ -9,9 +9,9 @@ from nucleus.layers import (
     HMLPEmbed, 
     HMLPDebed, 
     FiLMMLP,
-    TransformerBlock,
-    TransformerAxialBlock,
-    TransformerNeighborBlock,
+    Nucleus1TransformerBlock,
+    Nucleus1TransformerAxialBlock,
+    Nucleus1TransformerNeighborBlock,
 )
 from nucleus.data.batching import CollatedBatch
 from ._api import register_model
@@ -45,7 +45,7 @@ class ViTBase(nn.Module):
         self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
 
         self.blocks = nn.ModuleList([
-            TransformerBlock(
+            Nucleus1TransformerBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
             )
@@ -160,7 +160,7 @@ class AxialViT(ViTBase):
             num_fluid_params=num_fluid_params,
         )
         self.blocks = nn.ModuleList([
-            TransformerAxialBlock(
+            Nucleus1TransformerAxialBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
             )
@@ -189,7 +189,7 @@ class NeighborViT(ViTBase):
             num_fluid_params=num_fluid_params,
         )
         self.blocks = nn.ModuleList([
-            TransformerNeighborBlock(
+            Nucleus1TransformerNeighborBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
             )

@@ -2,27 +2,24 @@ import torch
 import torch.nn as nn
 
 from nucleus.layers.attention import (
-    NeighborhoodAttention,
-    TemporalAttention,
-    SpatialNeighborhoodAttention, 
-    SpatialAttention, 
-    SpatialAxialAttention,
+    Nucleus1TemporalAttention,
+    Nucleus1SpatialNeighborhoodAttention, 
+    Nucleus1SpatialAttention, 
+    Nucleus1SpatialAxialAttention,
 )
 
-class SpaceTimeAttention(nn.Module):
+class Nucleus1SpaceTimeAttention(nn.Module):
     def __init__(
         self,
         embed_dim: int,
         num_heads: int
     ):
         super().__init__()
-        
-        self.temporal = TemporalAttention(
+        self.temporal = Nucleus1TemporalAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
-        
-        self.attention = SpatialAttention(
+        self.attention = Nucleus1SpatialAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
@@ -32,11 +29,11 @@ class SpaceTimeAttention(nn.Module):
         x = self.attention(x)
         return x
 
-class SpaceTimeNeighborAttention(SpaceTimeAttention):
+class Nucleus1SpaceTimeNeighborAttention(Nucleus1SpaceTimeAttention):
     def __init__(self, embed_dim: int, num_heads: int):
         super().__init__(embed_dim, num_heads)
         
-        self.attention = SpatialNeighborhoodAttention(
+        self.attention = Nucleus1SpatialNeighborhoodAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
@@ -46,11 +43,11 @@ class SpaceTimeNeighborAttention(SpaceTimeAttention):
         x = self.attention(x)
         return x
     
-class SpaceTimeAxialAttention(SpaceTimeAttention):
+class Nucleus1SpaceTimeAxialAttention(Nucleus1SpaceTimeAttention):
     def __init__(self, embed_dim: int, num_heads: int):
         super().__init__(embed_dim, num_heads)
         
-        self.attention = SpatialAxialAttention(
+        self.attention = Nucleus1SpatialAxialAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
         )
