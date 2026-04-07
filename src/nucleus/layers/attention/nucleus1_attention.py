@@ -162,13 +162,11 @@ class Nucleus1SpatialNeighborhoodAttention(nn.Module):
         self,
         embed_dim,
         num_heads,
-        kernel_size: int = 3,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
-        self.kernel_size = kernel_size
 
         self.input_head = nn.Linear(embed_dim, 3 * embed_dim, dtype=torch.bfloat16)
         self.output_head = nn.Linear(embed_dim, embed_dim, dtype=torch.bfloat16)
@@ -208,9 +206,9 @@ class Nucleus1SpatialNeighborhoodAttention(nn.Module):
             q,
             k,
             v,
-            kernel_size=self.kernel_size,
+            kernel_size=5,
             stride=1,
-            dilation=1,   
+            dilation=1,
         )
         
         output = einops.rearrange(output,
