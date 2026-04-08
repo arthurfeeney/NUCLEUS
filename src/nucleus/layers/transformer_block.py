@@ -1,11 +1,10 @@
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
 from nucleus.layers.adaptive_layernorm import AdaptiveLayerNorm
-from nucleus.layers.space_time_attention import NeighborhoodAttention, SpaceTimeNeighborAttention, SpaceTimeAttention, SpaceTimeAxialAttention
 from nucleus.layers.mlp import GeluMLP
+from nucleus.layers.attention import NeighborhoodAttention
 from torch.profiler import record_function
-from nucleus.layers.moe.topk_moe import TopkMoE, TopkMoEOutput, TopkRouterWithLoss, TopkRouterWithBias
+from nucleus.layers.moe.topk_moe import TopkMoE, TopkMoEOutput, TopkRouterWithBias
 from nucleus.layers.droppath import DropPath
 
 class TransformerBlock(nn.Module):
@@ -20,7 +19,7 @@ class TransformerBlock(nn.Module):
         self.attention_norm = nn.RMSNorm(embed_dim)
         self.mlp_norm = nn.RMSNorm(embed_dim)
         self.drop_path = DropPath(drop_path_prob)
-        self.attention = SpaceTimeAttention(embed_dim=embed_dim, num_heads=num_heads)
+        self.attention = NeighborhoodAttention(embed_dim=embed_dim, num_heads=num_heads)
         self.mlp = GeluMLP(embed_dim)
     
     def _attention(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
@@ -93,97 +92,3 @@ class TransformerMoEBlock(TransformerBlock):
         x = self._attention(x, freqs, fluid_params)
         x, moe_output = self._mlp(x, fluid_params)
         return x, moe_output
-    
-class TransformerNeighborBlock(TransformerBlock):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        drop_path_prob: float,
-    ):
-        super().__init__(embed_dim, num_heads, drop_path_prob)
-        self.attention = NeighborhoodAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )
-    
-class TransformerNeighborMoEBlock(TransformerMoEBlock):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        num_experts: int,
-        topk: int,
-        drop_path_prob: float,
-        num_fluid_params: int,
-    ):
-        super().__init__(
-            embed_dim, num_heads, num_experts, topk, drop_path_prob, num_fluid_params
-        )
-        self.attention = NeighborhoodAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )
-    
-class TransformerSpatialNeighborBlock(TransformerBlock):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        drop_path_prob: float,
-    ):
-        super().__init__(embed_dim, num_heads, drop_path_prob)
-        self.attention = SpaceTimeNeighborAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )
-        self.mlp = GeluMLP(embed_dim)
-    
-class TransformerSpatialNeighborMoEBlock(TransformerMoEBlock):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        num_experts: int,
-        topk: int,
-        drop_path_prob: float,
-        num_fluid_params: int,
-    ):
-        super().__init__(
-            embed_dim, num_heads, num_experts, topk, drop_path_prob, num_fluid_params
-        )
-        self.attention = SpaceTimeNeighborAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )
-    
-class TransformerAxialBlock(TransformerBlock):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        drop_path_prob: float,
-    ):
-        super().__init__(embed_dim, num_heads, drop_path_prob)
-        self.attention = SpaceTimeAxialAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )    
-    
-class TransformerAxialMoEBlock(TransformerMoEBlock):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        num_experts: int,
-        topk: int,
-        drop_path_prob: float,
-        num_fluid_params: int,
-    ):
-        super().__init__(
-            embed_dim, num_heads, num_experts, topk, drop_path_prob, num_fluid_params
-        )
-        self.attention = SpaceTimeAxialAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-        )

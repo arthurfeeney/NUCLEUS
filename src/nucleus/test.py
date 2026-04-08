@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from nucleus.data.batching import Data
 from nucleus.data import ForecastDataset, InMemForecastDataset
+from nucleus.data.layout import convert_layout
 from nucleus.layers.moe.topk_moe import TopkMoEOutput
 from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
 from nucleus.utils.sdf_reinit import sdf_reinit_fast_marching
@@ -78,7 +79,7 @@ def clip_liquid_temp(preds, fluid_params):
     temp[~liquid_mask] = torch.clamp(temp[~liquid_mask], min=fluid_params["bulk_temp"])
     return temp
     
-def run_test(model, normalizer, test_file_path: str, max_timesteps: int):
+def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
     test_dataset = InMemForecastDataset(
         filenames=[test_file_path],
         input_fields=["dfun", "temperature", "velx", "vely"],
@@ -88,7 +89,8 @@ def run_test(model, normalizer, test_file_path: str, max_timesteps: int):
         time_step=1,
         start_time=400,
         normalizer=normalizer,
-        augment=False
+        augment=False,
+        layout=cfg.model_cfg.layout
     )
 
     start_time = test_dataset.start_time
@@ -103,7 +105,7 @@ def run_test(model, normalizer, test_file_path: str, max_timesteps: int):
             data: Data = test_dataset[itr]
             
             batch = data.to_collated_batch()
-            batch = batch.to("cuda")
+            batch = batch.to("cuda" if torch.cuda.is_available() else "cpu")
             
             # these values were normalized when indexing the dataset. We need the unnormalized
             # values so we can properly normalize/unnormalize the data fields in the inference loop.
@@ -145,13 +147,14 @@ def run_test(model, normalizer, test_file_path: str, max_timesteps: int):
             preds.append(pred)
             targets.append(tgt)
             timesteps.append(torch.arange(start_time+itr+skip_itrs, start_time+itr+2*skip_itrs))
-            
-            #torch.save(inp, f"inp_{itr}.pt")
-            #break
+
+    # Convert layout to always be T H W C
+    preds = [convert_layout(p, target_layout="t h w c", source_layout=cfg.model_cfg.layout) for p in preds]
+    targets = [convert_layout(t, target_layout="t h w c", source_layout=cfg.model_cfg.layout) for t in targets]
 
     preds = torch.cat(preds, dim=0)[None, ...]         # 1, T, H, W, C
     targets = torch.cat(targets, dim=0)[None, ...]     # 1, T, H, W, C
-    timesteps = torch.cat(timesteps, dim=0)             # T,
+    timesteps = torch.cat(timesteps, dim=0)            # T,
     
     fluid_params = test_dataset.fluid_params[0]
 

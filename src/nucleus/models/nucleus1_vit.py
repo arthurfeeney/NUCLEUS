@@ -9,6 +9,8 @@ from nucleus.layers import (
     HMLPEmbed, 
     HMLPDebed, 
     FiLMMLP,
+)
+from nucleus.layers.nucleus1_transformer_block import (
     Nucleus1TransformerBlock,
     Nucleus1TransformerAxialBlock,
     Nucleus1TransformerNeighborBlock,
@@ -16,9 +18,9 @@ from nucleus.layers import (
 from nucleus.data.batching import CollatedBatch
 from ._api import register_model
 
-__all__ = ["ViT"]
+__all__ = ["Nucleus1ViT"]
 
-class ViTBase(nn.Module):
+class Nucleus1ViTBase(nn.Module):
     def __init__(
         self,
         input_fields: int,
@@ -68,7 +70,7 @@ class ViTBase(nn.Module):
         fluid_params: (B, num_fluid_params)
         """
         x = batch.input
-        fluid_params = batch.fluid_params_tensor(x.device)
+        fluid_params = batch.fluid_params_tensor
         B, T, _, _, _ = x.shape
         
         input = x.clone()
@@ -116,8 +118,8 @@ class ViTBase(nn.Module):
         
         return x
         
-@register_model("vit")
-class ViT(ViTBase):
+@register_model("nucleus1_vit")
+class Nucleus1ViT(Nucleus1ViTBase):
     def __init__(
         self,
         input_fields: int,
@@ -138,8 +140,8 @@ class ViT(ViTBase):
             num_fluid_params=num_fluid_params,
         )
 
-@register_model("axial_vit")
-class AxialViT(ViTBase):
+@register_model("nucleus1_axial_vit")
+class Nucleus1AxialViT(Nucleus1ViTBase):
     def __init__(
         self,
         input_fields: int,
@@ -167,8 +169,8 @@ class AxialViT(ViTBase):
             for _ in range(processor_blocks)
         ])
     
-@register_model("neighbor_vit")
-class NeighborViT(ViTBase):
+@register_model("nucleus1_neighbor_vit")
+class Nucleus1NeighborViT(Nucleus1ViTBase):
     def __init__(
         self,
         input_fields: int,
