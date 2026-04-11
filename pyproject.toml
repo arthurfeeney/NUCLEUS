@@ -14,8 +14,6 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
-    "torch==2.10.0",
-    "torchvision",
     "h5py",
     "hydra-core",
     "lightning",
@@ -38,15 +36,34 @@ dependencies = [
     "pytest"
 ]
 
+[project.optional-dependencies]
+cpu = [
+    "torch==2.10.0",
+    "torchvision",
+    "natten"
+]
+cu128 = [
+    "torch==2.10.0",
+    "torchvision",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu128" },
+  ]
+]
+
 [tool.uv.sources]
 torch = [
   # For developing on macos, need cpu torch
-  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
-  { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cu128" },
 ]
 torchvision = [
-  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
-  { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cu128" },
 ]
 
 [[tool.uv.index]]
@@ -57,11 +74,6 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "natten"
-url = "https://whl.natten.org"
 explicit = true
 
 [tool.black]
