@@ -84,8 +84,8 @@ def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
         filenames=[test_file_path],
         input_fields=["dfun", "temperature", "velx", "vely"],
         output_fields=["dfun", "temperature", "velx", "vely"],
-        future_time_window=5,
-        history_time_window=5,
+        future_time_window=cfg.future_time_window,
+        history_time_window=cfg.history_time_window,
         time_step=1,
         start_time=400,
         normalizer=normalizer,
@@ -128,12 +128,6 @@ def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
             if len(moe_output) > 0:
                 # NOTE: only tracking moe outputs for every layer. Must move to CPU to avoid mem overflow.
                 moe_outputs.append([m.detach().to('cpu') for m in moe_output])
-
-            # clip pred temperature to be below wall temperature.
-            pred[..., 1] = torch.clamp(
-                pred[..., 1], 
-                max=wall_temp
-            )
             
             pred = normalizer.unnormalize(pred, bulk_temp)
             tgt = normalizer.unnormalize(tgt, bulk_temp)
