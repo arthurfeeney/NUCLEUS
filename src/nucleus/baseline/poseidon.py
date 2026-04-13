@@ -79,7 +79,6 @@ class ScOTOutput(ModelOutput):
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     reshaped_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
 
-
 class ScOTConfig(PretrainedConfig):
     """https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/configuration_swinv2.py"""
 
@@ -1355,8 +1354,9 @@ class ScOT(Swinv2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, ScOTOutput]:
-
+        
         # [B, 1, C, H, W] -> [B, C, H, W]        
+        assert batch.input.shape[1] == 1, "pixel_values must be [B, 1, C, H, W]"
         pixel_values = batch.input.squeeze(1)
         if batch.target is not None:
             labels = batch.target.squeeze(1)

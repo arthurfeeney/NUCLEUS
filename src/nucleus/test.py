@@ -8,6 +8,7 @@ from nucleus.data.layout import convert_layout
 from nucleus.layers.moe.topk_moe import TopkMoEOutput
 from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
 from nucleus.utils.sdf_reinit import sdf_reinit_fast_marching
+from nucleus.baseline.poseidon import ScOTOutput
 
 
 @dataclass
@@ -121,6 +122,9 @@ def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
             output = model(batch.get_input())
             if isinstance(output, tuple):
                 pred, moe_output = output
+            if isinstance(output, ScOTOutput):
+                pred = output.output.unsqueeze(1) # [B, 1, C, H, W]
+                moe_output = []
             else:
                 pred = output
                 moe_output = []
