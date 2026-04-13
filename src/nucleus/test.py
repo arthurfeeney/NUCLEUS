@@ -9,6 +9,7 @@ from nucleus.layers.moe.topk_moe import TopkMoEOutput
 from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
 from nucleus.utils.sdf_reinit import sdf_reinit_fast_marching
 from nucleus.baseline.poseidon import ScOTOutput
+from nucleus.baseline.moe_dpot import MoEPOTNet
 
 
 @dataclass
@@ -102,7 +103,7 @@ def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
     moe_outputs = []
 
     with torch.inference_mode():
-        for itr in range(0, max_timesteps, skip_itrs):            
+        for itr in range(0, max_timesteps, skip_itrs):
             data: Data = test_dataset[itr]
             
             batch = data.to_collated_batch()
@@ -121,7 +122,10 @@ def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
             torch.compiler.cudagraph_mark_step_begin()
             output = model(batch.get_input())
             if isinstance(output, tuple):
-                pred, moe_output = output
+                if isinstance(model, MoEPOTNet):
+                    output, _, _ = output
+                else:
+                    pred, moe_output = output
             if isinstance(output, ScOTOutput):
                 pred = output.output.unsqueeze(1) # [B, 1, C, H, W]
                 moe_output = []
@@ -138,6 +142,12 @@ def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
 
             pred = pred.to(torch.float32).squeeze(0).detach().cpu()
             tgt = tgt.to(torch.float32).squeeze(0).detach().cpu()
+            
+            pred_finite = pred.isfinite().all()
+            tgt_finite = tgt.isfinite().all()
+            if not (pred_finite and tgt_finite):
+                print("Stoppign at iter {iter}, hit NaN in pred or tgt.")
+                break
 
             # Reinitialize the SDF at each timestep
             #pred[:, 0] = sdf_reinit_fast_marching(pred[:, 0], dx=1 / 4, far_threshold=4)

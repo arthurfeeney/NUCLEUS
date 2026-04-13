@@ -27,7 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.nn.modules.loss import _WeightedLoss
-from typing import Tuple
+from typing import Tuple, Optional
 import numpy as np
 from einops import rearrange
 import lightning as L
@@ -430,8 +430,8 @@ class MoEPOTNet(L.LightningModule):
     def __init__(
             self, 
             config: dict,
-            router_loss_weight: float,
-            lr: float
+            router_loss_weight: Optional[float] = None,
+            lr: Optional[float] = None
         ):
         super().__init__()
         self.save_hyperparameters(config)

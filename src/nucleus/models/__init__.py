@@ -5,7 +5,7 @@ from .nucleus1_vit import Nucleus1ViT, Nucleus1AxialViT, Nucleus1NeighborViT
 from .unets import ModernUnet, ClassicUnet
 from .bubbleformer_vit import BubbleformerViT, BubbleformerFilmViT
 from nucleus.baseline.poseidon import ScOT, ScOTConfig
-from nucleus.baseline.moe_dpot import MoEPOTNet
+from nucleus.baseline.moe_dpot import MoEPOTNet as MoEPOTNetModule
 from nucleus.data.batching import CollatedBatch
 from ._api import (
     register_model,
@@ -20,6 +20,6 @@ class Poseidon(ScOT):
         super().__init__(ScOTConfig(**kwargs))
 
 @register_model("moe_dpot")
-class MoEPOTNet(MoEPOTNet):
+class MoEPOTNet(MoEPOTNetModule):
     def __init__(self, *args, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(config=kwargs, router_loss_weight=kwargs.get("router_loss_weight"), lr=kwargs.get("lr"))
