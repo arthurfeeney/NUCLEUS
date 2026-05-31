@@ -251,34 +251,11 @@ def main(cfg: DictConfig) -> None:
         pp = pprint.PrettyPrinter(depth=4)
         pp.pprint(cfg)
 
-    #torch.cuda.memory._record_memory_history(
-    #    max_entries=100000
-    #)
-
-    #with profile(
-    #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        #record_shapes=True,
-        #profile_memory=True,
-    #) as prof:
-
     trainer.fit(
         train_module,
         train_dataloaders=train_dataloader,
         val_dataloaders=val_dataloader
     )
-
-    #prof.export_memory_timeline("memory_timeline.html", device="cuda:0")
-    #prof.export_chrome_trace("trace.json")
-    #print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
-    #rint(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-
-    #try:
-    #    torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
-    #except Exception as e:
-    #    print("failed to capture memory snapshot")
-    #torch.cuda.memory._record_memory_history(
-    #    enabled=None
-    #)
 
 if __name__ == "__main__":
     # pylint: disable=no-value-for-parameter
