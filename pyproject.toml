@@ -40,19 +40,23 @@ dev = [
     "pytest",
 ]
 
+# torchvision seems to be a required dependency for lightning
 [project.optional-dependencies]
 cpu = [
     "torch>=2.11.0,<3",
+    "torchvision>=0.26.0",
     "natten>=0.21.6",
 ]
 cu128 = [
     # fully pinned
     "torch==2.11.0,<3",
+    "torchvision>=0.26.0",
     "natten==0.21.6+torch2110cu128",
 ]
 cu130 = [
     # try not to pin?
     "torch>=2.11.0,<3",
+    "torchvision>=0.26.0",
     "natten>=0.21.6",
 ]
 poseidon = [
