@@ -9,21 +9,10 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from nucleus.data.normalize import get_normalizer
 from nucleus.run_forward_trajectory import run_test, TestResults
-from nucleus.plot.plotting import (
-    plot_rollout,
-    plot_rollout_stability,
-    plot_rollout_moe_overlay,
-    plot_distribution,
-)
-from nucleus.plot.plot_metrics import (
-    plot_simple_metrics,
-    plot_vapor_volume_at_height,
-    plot_bubble_counts,
-)
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 from lightning import LightningModule
 
-@hydra.main(version_base=None, config_path="../config", config_name="default")
+@hydra.main(version_base=None, config_path="../config", config_name="inference")
 def main(cfg: DictConfig):
     set_fp32_precision()
 
@@ -52,33 +41,27 @@ def main(cfg: DictConfig):
     # Rollouts are saved in the directory containing the checkpoint
     save_root = pathlib.Path(cfg.checkpoint_path).parent / "rollouts"
     save_root.mkdir(parents=True, exist_ok=True)
+    with open(save_root / "config.yaml", "w") as handle:
+        OmegaConf.save(cfg, f=handle.name)
+    
     all_test_results = []
     for test_file_path in cfg.data_cfg.test_paths:
 
-        test_results: TestResults = run_test(cfg, model, normalizer, test_file_path, trajectory_steps=300)
+        test_results: TestResults = run_test(cfg, model, normalizer, test_file_path, trajectory_steps=cfg.trajectory_steps)
         all_test_results.append(test_results)
-
-        save_dir = save_root / f"{test_results.case_name}"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        plot_rollout(
-           save_dir=save_dir,
-           rollout=test_results.preds,
-           test_results=test_results,
-           step_size=5,
-            include_ground_truth=True,
-        )
-        plot_distribution(
-            save_dir=save_dir,
-            rollout=test_results.preds,
-            test_results=test_results,
-        )
      
     for test_result in all_test_results:
-        h5py_save_path = save_root / f"{test_result.case_name}.hdf5"
+        rollout_save_root = save_root / test_result.case_name
+        model_save_path = rollout_save_root / "model_cfg.json"
+        with open(model_save_path, "w") as handle:
+            OmegaConf.save(config=cfg.model_cfg, f=handle.name)
+        h5py_save_path = rollout_save_root / "trajectories.hdf5"
         with h5py.File(h5py_save_path, "w") as handle:
             handle.create_dataset("pred_trajectory", data=test_result.preds)
             handle.create_dataset("gt_trajectory", data=test_result.targets)
-        
+        json_save_path = rollout_save_root / "sim_params.json"
+        with open(json_save_path, "w") as handle:
+            json.dump(test_result.sim_params, handle)
         
 if __name__ == "__main__":
     # pylint: disable=no-value-for-parameter
