@@ -1,4 +1,3 @@
 from .forecast_dataset import ForecastDatasetBase, ForecastDataset
 from .in_mem_forecast_dataset import InMemForecastDataset
 from .web_forecast_dataset import WebForecastDataset
-from .pushforward_forecast_dataset import PushforwardForecastDataset

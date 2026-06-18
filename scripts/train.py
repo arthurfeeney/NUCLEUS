@@ -20,9 +20,9 @@ from lightning.pytorch.callbacks import ModelSummary, Callback, ModelCheckpoint,
 from lightning.pytorch.callbacks.progress.rich_progress import RichProgressBarTheme
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 
-from nucleus.data.batching import collate, pushforward_collate
+from nucleus.data.batching import collate
 from nucleus.data.normalize import get_normalizer
-from nucleus.data import ForecastDataset, InMemForecastDataset, PushforwardForecastDataset
+from nucleus.data import ForecastDataset, InMemForecastDataset
 from nucleus.modules import get_train_module
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 from nucleus.utils.parameter_count import count_model_parameters
@@ -90,6 +90,18 @@ def main(cfg: DictConfig) -> None:
     seed_everything(cfg.seed)
     set_fp32_precision()
     
+    run = wandb.init(
+        project="nucleus",
+        entity="hpcforge"
+    )
+    
+    # If log_dir is not set, write to a temporary directory    
+    tmp_dir = os.environ["TMPDIR"]
+    if cfg.log_dir is None and tmp_dir is not None:
+        cfg.log_dir = tmp_dir
+    assert cfg.log_dir is not None, "log_dir should be set in hydra config or the env variable $TMPDIR should be set"
+    print(f"logging to {cfg.log_dir}")
+
     # Setup Wandb Logger.
     log_id_parts = [
         cfg.model_cfg.name.lower(),
@@ -109,8 +121,8 @@ def main(cfg: DictConfig) -> None:
     cfg.commit_sha = commit_sha
 
     logger = WandbLogger(
-        entity=os.environ["WANDB_ENTITY"],
-        project=os.environ["WANDB_PROJECT"],
+        entity=run.entity,
+        project=run.project,
         name=log_id,
         dir=cfg.log_dir,
         config=OmegaConf.to_container(cfg),
@@ -133,21 +145,12 @@ def main(cfg: DictConfig) -> None:
     
     normalizer = get_normalizer(OmegaConf.to_container(cfg.normalizer_cfg, resolve=True))
 
-    is_pushforward = "pushforward" in cfg.model_cfg.train_module_name
-    if is_pushforward:
-        dataset_cls = PushforwardForecastDataset
-        dataset_kwargs = dict(
-            num_time_windows=cfg.model_cfg.params.num_windows,
-            time_window_size=cfg.history_time_window,
-        )
-        collate_fn = pushforward_collate
-    else:
-        dataset_cls = InMemForecastDataset if "64" in cfg.data_cfg.dataset else ForecastDataset
-        dataset_kwargs = dict(
-            history_time_window=cfg.history_time_window,
-            future_time_window=cfg.future_time_window,
-        )
-        collate_fn = collate
+    dataset_cls = InMemForecastDataset if "64" in cfg.data_cfg.dataset else ForecastDataset
+    dataset_kwargs = dict(
+        history_time_window=cfg.history_time_window,
+        future_time_window=cfg.future_time_window,
+    )
+    collate_fn = collate
 
     train_dataset = dataset_cls(
         filenames=cfg.data_cfg.train_paths,
@@ -156,13 +159,12 @@ def main(cfg: DictConfig) -> None:
         **dataset_kwargs,
         time_step=cfg.time_step,
         start_time=cfg.start_time,
-        fluid_params=train_module.model.fluid_params,
-        heater_params=train_module.model.heater_params,
-        global_params=train_module.model.global_params,
+        fluid_params=train_module.model.expected_fluid_params,
+        heater_params=train_module.model.expected_heater_params,
+        global_params=train_module.model.expected_global_params,
         layout=train_module.model.layout,
         normalizer=normalizer,
         augment=True,
-        layout=cfg.model_cfg.layout
     )
     val_dataset = dataset_cls(
         filenames=cfg.data_cfg.val_paths,
@@ -171,9 +173,9 @@ def main(cfg: DictConfig) -> None:
         **dataset_kwargs,
         time_step=cfg.time_step,
         start_time=cfg.start_time,
-        fluid_params=train_module.model.fluid_params,
-        heater_params=train_module.model.heater_params,
-        global_params=train_module.model.global_params,
+        fluid_params=train_module.model.expected_fluid_params,
+        heater_params=train_module.model.expected_heater_params,
+        global_params=train_module.model.expected_global_params,
         layout=train_module.model.layout,
         normalizer=normalizer,
         augment=False,
@@ -183,7 +185,7 @@ def main(cfg: DictConfig) -> None:
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=12,
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=True,
