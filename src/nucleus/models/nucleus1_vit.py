@@ -48,7 +48,7 @@ class Nucleus1ViTBase(nn.Module):
     ]
     expected_fields = [
         "dfun", # sdf
-        "temperature"
+        "temperature",
         "velx",
         "vely"
     ]
