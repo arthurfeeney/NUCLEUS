@@ -1,3 +1,4 @@
+import dataclasses
 from typing import Optional, Callable, TypeVar, List, Any
 import torch.nn as nn
 
@@ -23,12 +24,12 @@ def list_models() -> List[str]:
     """
     return sorted(list(MODELS.keys()), key=lambda x: x[0])
 
-def get_model(name: str, **config: Any) -> nn.Module:
+def get_model(name: str, **kwargs: Any) -> nn.Module:
     """
     Args:
         name (str) : Name of the model to be fetched
     Returns:
-        model (nn.Module) : Model class
+        model (nn.Module) : Model instance
     """
     name = name.lower()
     try:
@@ -36,7 +37,11 @@ def get_model(name: str, **config: Any) -> nn.Module:
     except KeyError as exc:
         raise KeyError(f"Model {name} not found. Available Models: {MODELS.keys()}") from exc
 
-    return fn(**config)
+    if hasattr(fn, "config_class"):
+        valid_fields = {f.name for f in dataclasses.fields(fn.config_class)}
+        config = fn.config_class(**{k: v for k, v in kwargs.items() if k in valid_fields})
+        return fn(config)
+    return fn(**kwargs)
 
 def get_model_class(name: str) -> nn.Module:
     name = name.lower()

@@ -1,10 +1,11 @@
+import dataclasses
+from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.profiler import record_function
 from rotary_embedding_torch import RotaryEmbedding
 
 from nucleus.layers.adaptive_layernorm import AdaptiveLayerNorm
-from nucleus.layers.mlp import GeluMLP
 from nucleus.layers.attention import NeighborhoodAttention
 from nucleus.layers.moe.topk_moe import TopkMoE, TopkMoEOutput, TopkRouterWithBias
 from nucleus.layers.droppath import DropPath
@@ -17,8 +18,20 @@ from nucleus.utils.sdf_reinit import sdf_reinit_sussman
 
 from ._api import register_model
 
-__all__ = ["Nucleus2MoE"]
-    
+__all__ = ["Nucleus2MoE", "Nucleus2MoEConfig"]
+
+
+@dataclass
+class Nucleus2MoEConfig:
+    patch_size: int
+    embed_dim: int
+    num_heads: int
+    processor_blocks: int
+    num_experts: int
+    topk: int
+    mlp_ratio: float = 4.0
+
+
 class TransformerMoEBlock(nn.Module):    
     def __init__(
         self,
@@ -79,6 +92,7 @@ class TransformerMoEBlock(nn.Module):
         return x, moe_output
 
 class MoEBase(nn.Module):
+    config_class = Nucleus2MoEConfig
     expected_fluid_params = [
         "inv_reynolds",
         "cpgas",
@@ -107,56 +121,53 @@ class MoEBase(nn.Module):
     ]
     num_sim_params = len(expected_fluid_params) + len(expected_heater_params) + len(expected_global_params)
     layout = "t h w c"
-    def __init__(
-        self,
-        input_fields: int,
-        output_fields: int,
-        patch_size: int,
-        embed_dim: int,
-        num_heads: int,
-        processor_blocks: int,
-        num_experts: int,
-        topk: int,
-        mlp_ratio: float = 4.0,
-    ):
+    def __init__(self, config: Nucleus2MoEConfig):
         super().__init__()
+        self.config = config
+        n_fields = len(self.expected_fields)
         self.embed = LinearEmbed(
-            patch_size=patch_size,
-            in_channels=input_fields,
-            embed_dim=embed_dim,
+            patch_size=config.patch_size,
+            in_channels=n_fields,
+            embed_dim=config.embed_dim,
         )
-        
+
         # Every attention block reuses the same frequencies, so we only need to compute them once.
         self.rotary_emb = RotaryEmbedding(
-            # NOTE: This must be smaller than the head dim. 
-            dim=(embed_dim // num_heads) // 3,
+            # NOTE: This must be smaller than the head dim.
+            dim=(config.embed_dim // config.num_heads) // 3,
             freqs_for="pixel",
             max_freq=256,
             # We want a [Batch, Seq1, Seq2, Seq3, Heads, Dim] layout
             seq_before_head_dim=True
         )
-        
-        self.drop_path_probs = torch.linspace(0.0, 0.1, processor_blocks)
-        
+
+        self.drop_path_probs = torch.linspace(0.0, 0.1, config.processor_blocks)
+
         self.blocks = nn.ModuleList([
             TransformerMoEBlock(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                num_experts=num_experts,
-                topk=topk,
+                embed_dim=config.embed_dim,
+                num_heads=config.num_heads,
+                num_experts=config.num_experts,
+                topk=config.topk,
                 num_sim_params=self.num_sim_params,
                 drop_path_prob=self.drop_path_probs[idx].item(),
-                mlp_ratio=mlp_ratio,
+                mlp_ratio=config.mlp_ratio,
             )
-            for idx in range(processor_blocks)
+            for idx in range(config.processor_blocks)
         ])
 
-        self.out_norm = nn.RMSNorm(embed_dim)
+        self.out_norm = nn.RMSNorm(config.embed_dim)
         self.debed = LinearDebed(
-            patch_size=patch_size,
-            embed_dim=embed_dim,
-            out_channels=output_fields
+            patch_size=config.patch_size,
+            embed_dim=config.embed_dim,
+            out_channels=n_fields
         )
+
+    def get_extra_state(self):
+        return dataclasses.asdict(self.config)
+
+    def set_extra_state(self, state):
+        self.config = Nucleus2MoEConfig(**state)
 
     def forward(self, batch: CollatedBatch) -> torch.Tensor:
         return self.step(batch.input, batch.sim_params_tensor)
