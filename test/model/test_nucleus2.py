@@ -17,7 +17,7 @@ def model():
         processor_blocks=2,
         num_experts=4,
         topk=2,
-        mlp_ratio=4.0
+        moe_intermediate_dim=128
     )
 
 @pytest.mark.parametrize("device", ["cpu"])
@@ -28,17 +28,17 @@ def test_nucleus2(device, model):
     model = model.to(device)
     
     batch = CollatedBatch(
-        input=torch.randn(4, 8, 64, 64, 4, device=device),
+        input=torch.randn(2, 8, 64, 64, 4, device=device),
         target=None,
         sim_params_dict={},
-        sim_params_tensor=torch.randn(4, model.num_sim_params, device=device),
+        sim_params_tensor=torch.randn(2, model.num_sim_params, device=device),
         x_grid=torch.randn(64, device=device),
         y_grid=torch.randn(64, device=device),
         dx=torch.tensor(0.01, device=device),
         dy=torch.tensor(0.01, device=device),
     )
     output, moe_output = model(batch)
-    assert output.shape == (4, 8, 64, 64, 4)
+    assert output.shape == (2, 8, 64, 64, 4)
     assert torch.all(torch.isfinite(output))
 
     loss = output.sum()
