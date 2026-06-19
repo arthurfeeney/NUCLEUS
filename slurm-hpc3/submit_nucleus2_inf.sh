@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -A amowli_lab_gpu
-#SBATCH -p free-gpu32
+#SBATCH -p free-gpu
 #SBATCH --job-name=train-nucleus-exp
 #SBATCH -o slurm-%x-%j.out
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
-#SBATCH --gres=gpu:RTX6000:1
-#SBATCH --time=12:59:00
+#SBATCH --gres=gpu:A30:1
+#SBATCH --time=00:59:00
 
 uv venv $TMPDIR/NUCLEUS
 source $TMPDIR/NUCLEUS/bin/activate
@@ -19,8 +19,9 @@ export PYTHONPYCACHE_DIR=$TMPDIR/pycache/
 uv sync --no-cache --active --extra cu130
 uv pip install -e .
 
-python scripts/train.py \
+python scripts/inf.py \
     model_cfg=nucleus2/nucleus2_experiment \
+    checkpoint_path=/share/crsp/lab/amowli/share/nucleus2-model-ckpts/neighbor_moe_exp_may13.ckpt \
     data_cfg=poolboiling64 \
     normalizer_cfg=standard \
-    batch_size=32 \
+    log_dir=/pub/afeeney/nucleus_logs/ \
