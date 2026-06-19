@@ -11,7 +11,7 @@ from nucleus.data.layout import convert_layout
 from nucleus.data.normalize import Normalizer
 
 
-class WebForecastDataset(IterableDataset):
+class ForecastWebDataset(IterableDataset):
     """
     Streams training samples from webdataset shards produced by hdf5_dataset_to_webdataset.py.
 
@@ -71,8 +71,11 @@ class WebForecastDataset(IterableDataset):
         return make_data(
             input=inp.float(),
             target=tgt.float(),
-            fluid_params_dict=sim_params,
+            sim_params_dict=sim_params,
             downsample_factor=1,
+            fluid_params=self.fluid_params,
+            heater_params=self.heater_params,
+            global_params=self.global_params
         )
 
     def __iter__(self):
