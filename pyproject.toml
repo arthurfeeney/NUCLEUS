@@ -38,6 +38,7 @@ dependencies = [
 dev = [
     "black",
     "pytest",
+    "ruff"
 ]
 
 # torchvision seems to be a required dependency for lightning
