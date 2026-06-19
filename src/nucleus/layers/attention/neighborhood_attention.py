@@ -43,7 +43,6 @@ class NeighborhoodAttention(nn.Module):
 
     def forward(self, x, freqs):
         b, t, h, w, c = x.shape
-        input_dtype = x.dtype
         
         heads = self.input_head(x).view(b, t, h, w, self.num_heads, 3 * self.head_dim)
         

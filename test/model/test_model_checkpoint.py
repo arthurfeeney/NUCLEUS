@@ -25,7 +25,7 @@ NUCLEUS1_MOE_KWARGS = dict(
 )
 NUCLEUS2_MOE_KWARGS = dict(
     patch_size=4, embed_dim=64, num_heads=4, processor_blocks=2,
-    num_experts=4, topk=2, mlp_ratio=4.0,
+    num_experts=4, topk=2, moe_intermediate_dim=256,
     # modules.py adds these; they should be filtered out for nucleus2
     input_fields=4, output_fields=4,
 )

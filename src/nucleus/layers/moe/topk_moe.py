@@ -240,7 +240,7 @@ class TopkMoEOutput:
 
 # grouped_mm is cannot be cuda-graphed due to a host-device transfer, so cannot use "reduced-overhead"
 # (The offsets `offs` are moved to the CPU, and then moved back to the device when iterating over each gemm.)
-@torch.compile(fullgraph=True)
+#@torch.compile(fullgraph=True)
 class TopkMoE(nn.Module):
     def __init__(
         self,
@@ -281,7 +281,8 @@ class TopkMoE(nn.Module):
         x = x.view(-1, input_shape[-1])
         batch_size = x.shape[0]
         
-        router_output = self.router(x)
+        # Router is always applied in float32 to help stability.
+        router_output = self.router(x.to(torch.float32))
         
         # NOTE with torch.compile(fullgraph=True), the grouped gemm kernel does not support torch.float32, 
         # so the input data has to be truncated to bfloat 16.

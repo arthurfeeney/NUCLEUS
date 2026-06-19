@@ -72,8 +72,8 @@ class TransformerMoEBlock(nn.Module):
 
         self.drop_path = DropPath(drop_path_prob)
 
-        self.attention_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params)
-        self.mlp_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params)
+        self.attention_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, dtype=config.attention_dtype)
+        self.mlp_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, config.attention_dtype)
 
         self.router = TopkRouterWithBias(
             config.num_experts,
@@ -133,6 +133,7 @@ class MoEBase(nn.Module):
     def __init__(self, config: Nucleus2MoEConfig):
         super().__init__()
         self.config = config
+        self.embed_dtype = config.embed_dtype
         n_fields = len(self.expected_fields)
 
         self.embed = LinearEmbed(
@@ -159,7 +160,7 @@ class MoEBase(nn.Module):
             for idx in range(config.processor_blocks)
         ])
 
-        self.out_norm = nn.RMSNorm(config.embed_dim)
+        self.out_norm = nn.RMSNorm(config.embed_dim, dtype=config.debed_dtype)
         self.debed = LinearDebed(
             patch_size=config.patch_size,
             embed_dim=config.embed_dim,
@@ -186,7 +187,7 @@ class MoEBase(nn.Module):
         assert sim_params.dtype == torch.float32
 
         with record_function("encode"):
-            x = embed = self.embed(input)
+            x = embed = self.embed(input.to(self.config.embed_dtype))
 
         with record_function("get_axial_freqs"):
             with torch.no_grad():
@@ -202,6 +203,7 @@ class MoEBase(nn.Module):
         x = x + embed
 
         with record_function("debed"):
+            x = x.to(self.config.debed_dtype)
             x = self.out_norm(x)
             x = self.debed(x)
 
