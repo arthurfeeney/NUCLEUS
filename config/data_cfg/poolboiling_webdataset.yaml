@@ -1,0 +1,15 @@
+# Webdataset shards produced by hdf5_dataset_to_webdataset.py.
+# Train/val/test splits match the split definitions in that script.
+# Update the root path to wherever the shards were written with --out_dir.
+dataset: poolboiling512
+input_fields: ["dfun", "temperature", "velx", "vely"]
+output_fields: ["dfun", "temperature", "velx", "vely"]
+
+train_paths:
+  - /share/crsp/lab/amowli/share/BubbleML_2_webdataset/train/shard-{000000..000999}.tar
+
+val_paths:
+  - /share/crsp/lab/amowli/share/BubbleML_2_webdataset/val/shard-{000000..000999}.tar
+
+test_paths:
+  - /share/crsp/lab/amowli/share/BubbleML_2_webdataset/test/shard-{000000..000999}.tar
