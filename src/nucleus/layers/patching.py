@@ -117,12 +117,12 @@ class HMLPDebed(nn.Module):
         return x.to(torch.float32)
 
 class LinearEmbed(nn.Module):
-    def __init__(self, patch_size: int, in_channels: int, embed_dim: int):
+    def __init__(self, patch_size: int, in_channels: int, embed_dim: int, dtype: torch.dtype):
         super().__init__()
         self.patch_size = patch_size
         self.in_channels = in_channels
         self.embed_dim = embed_dim
-        self.linear = nn.Linear(in_channels * patch_size ** 2, embed_dim, bias=False)
+        self.linear = nn.Linear(in_channels * patch_size ** 2, embed_dim, bias=False, dtype=dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = einops.rearrange(x, "b t (h p1) (w p2) c -> b t h w (c p1 p2)", p1=self.patch_size, p2=self.patch_size)
@@ -130,12 +130,12 @@ class LinearEmbed(nn.Module):
         return x
 
 class LinearDebed(nn.Module):
-    def __init__(self, patch_size: int, out_channels: int, embed_dim: int):
+    def __init__(self, patch_size: int, out_channels: int, embed_dim: int, dtype: torch.dtype):
         super().__init__()
         self.patch_size = patch_size
         self.out_channels = out_channels
         self.embed_dim = embed_dim
-        self.linear = nn.Linear(embed_dim, out_channels * patch_size ** 2, bias=False)
+        self.linear = nn.Linear(embed_dim, out_channels * patch_size ** 2, bias=False, dtype=dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.linear(x)

@@ -36,9 +36,7 @@ class NeighborhoodAttention(nn.Module):
         self.output_head = nn.Linear(embed_dim, embed_dim, dtype=torch.bfloat16, bias=False)
         self.qnorm = nn.RMSNorm(self.head_dim, dtype=torch.bfloat16)
         self.knorm = nn.RMSNorm(self.head_dim, dtype=torch.bfloat16)
-        
-        self.work_dtype = torch.bfloat16
-        
+                
         natten.use_kv_parallelism_in_fused_na(mode=True)
         # Unrestricted may increase memory usage, but allows for better performance.
         natten.set_memory_usage_preference(pref='unrestricted')
@@ -47,7 +45,6 @@ class NeighborhoodAttention(nn.Module):
         b, t, h, w, c = x.shape
         input_dtype = x.dtype
         
-        x = x.to(self.work_dtype)
         heads = self.input_head(x).view(b, t, h, w, self.num_heads, 3 * self.head_dim)
         
         q, k, v = heads.tensor_split(3, dim=-1)
@@ -67,5 +64,5 @@ class NeighborhoodAttention(nn.Module):
         )
         
         output = output.view(b, t, h, w, self.num_heads * self.head_dim)
-        output = self.output_head(output).to(input_dtype)
+        output = self.output_head(output)
         return output

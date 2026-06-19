@@ -1,5 +1,5 @@
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 from torch.profiler import record_function
@@ -21,6 +21,14 @@ from ._api import register_model
 __all__ = ["Nucleus2MoE", "Nucleus2MoEConfig"]
 
 
+_DTYPE_TO_STR: dict[torch.dtype, str] = {
+    torch.float32: "float32",
+    torch.float16: "float16",
+    torch.bfloat16: "bfloat16",
+}
+_STR_TO_DTYPE: dict[str, torch.dtype] = {v: k for k, v in _DTYPE_TO_STR.items()}
+
+
 @dataclass
 class Nucleus2MoEConfig:
     patch_size: int
@@ -29,129 +37,124 @@ class Nucleus2MoEConfig:
     processor_blocks: int
     num_experts: int
     topk: int
-    mlp_ratio: float = 4.0
+    moe_intermediate_dim: int
+    embed_dtype: torch.dtype = torch.bfloat16
+    debed_dtype: torch.dtype = torch.bfloat16
+    activation_dtype: torch.dtype = torch.bfloat16
+    attention_dtype: torch.dtype = torch.bfloat16
+    moe_dtype: torch.dtype = torch.bfloat16
 
 
-class TransformerMoEBlock(nn.Module):    
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        num_experts: int,
-        topk: int,
-        drop_path_prob: float,
-        num_sim_params: int,
-        mlp_ratio: float = 4.0,
-    ):
+def _config_to_dict(config: Nucleus2MoEConfig) -> dict:
+    d = dataclasses.asdict(config)
+    dtype_fields = {"embed_dtype", "debed_dtype", "activation_dtype", "attention_dtype", "moe_dtype"}
+    for key in dtype_fields:
+        d[key] = _DTYPE_TO_STR[d[key]]
+    return d
+
+
+def _config_from_dict(d: dict) -> Nucleus2MoEConfig:
+    d = dict(d)
+    dtype_fields = {"embed_dtype", "debed_dtype", "activation_dtype", "attention_dtype", "moe_dtype"}
+    for key in dtype_fields:
+        if key in d:
+            d[key] = _STR_TO_DTYPE[d[key]]
+    return Nucleus2MoEConfig(**d)
+
+
+class TransformerMoEBlock(nn.Module):
+    def __init__(self, config: Nucleus2MoEConfig, num_sim_params: int, drop_path_prob: float):
         super().__init__()
+
+        self.activation_dtype = config.activation_dtype
+        self.attention_dtype = config.attention_dtype
+        self.moe_dtype = config.moe_dtype
 
         self.drop_path = DropPath(drop_path_prob)
 
-        self.attention_norm = AdaptiveLayerNorm(embed_dim, num_sim_params)
-        self.mlp_norm = AdaptiveLayerNorm(embed_dim, num_sim_params)
+        self.attention_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params)
+        self.mlp_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params)
 
         self.router = TopkRouterWithBias(
-            num_experts, 
-            embed_dim, 
-            topk, 
-            bias_update_rate=0.001, # This was used in deepseek-v3
+            config.num_experts,
+            config.embed_dim,
+            config.topk,
+            bias_update_rate=0.001,
             softmax_first=False
         )
-        
-        self.attention = NeighborhoodAttention(embed_dim=embed_dim, num_heads=num_heads)
-        
+
+        self.attention = NeighborhoodAttention(embed_dim=config.embed_dim, num_heads=config.num_heads)
+
         self.mlp = TopkMoE(
-            num_experts=num_experts,
-            hidden_dim=embed_dim,
-            intermediate_dim=int(embed_dim * mlp_ratio),
-            topk=topk,
+            num_experts=config.num_experts,
+            hidden_dim=config.embed_dim,
+            intermediate_dim=config.moe_intermediate_dim,
+            topk=config.topk,
             router=self.router
         )
 
-    def _attention(
-        self, x: torch.Tensor, freqs: torch.Tensor, sim_params: torch.Tensor
-    ) -> torch.Tensor:
+    def _attention(self, x: torch.Tensor, freqs: torch.Tensor, sim_params: torch.Tensor) -> torch.Tensor:
         with record_function("attention"):
-            x = x + self.drop_path(self.attention(self.attention_norm(x, sim_params), freqs))
+            h = x.to(self.attention_dtype)
+            h = self.attention_norm(h, sim_params)
+            h = self.attention(h, freqs)
+            h = self.drop_path(h)
+            x = x + h.to(self.activation_dtype)
         return x
-    
-    def _mlp(self, x: torch.Tensor, sim_params: torch.Tensor) -> torch.Tensor:
+
+    def _mlp(self, x: torch.Tensor, sim_params: torch.Tensor):
         with record_function("moe"):
-            moe_output: TopkMoEOutput = self.mlp(self.mlp_norm(x, sim_params))
-            x = x + self.drop_path(moe_output.out)
+            h = x.to(self.moe_dtype)
+            h = self.mlp_norm(h, sim_params)
+            moe_output: TopkMoEOutput = self.mlp(h)
+            h = self.drop_path(moe_output.out)
+            x = x + h.to(self.activation_dtype)
         return x, moe_output
-        
-    def forward(
-        self,
-        x: torch.Tensor,
-        freqs: torch.Tensor,
-        sim_params: torch.Tensor,
-    ) -> torch.Tensor:
+
+    def forward(self, x: torch.Tensor, freqs: torch.Tensor, sim_params: torch.Tensor):
         x = self._attention(x, freqs, sim_params)
         x, moe_output = self._mlp(x, sim_params)
         return x, moe_output
 
+
 class MoEBase(nn.Module):
     config_class = Nucleus2MoEConfig
+    config_from_dict = staticmethod(_config_from_dict)
     expected_fluid_params = [
-        "inv_reynolds",
-        "cpgas",
-        "mugas",
-        "rhogas",
-        "thcogas",
-        "stefan",
-        "prandtl",
-        "gravy",
-        "bulk_temp",
-        "sat_temp"
+        "inv_reynolds", "cpgas", "mugas", "rhogas", "thcogas",
+        "stefan", "prandtl", "gravy", "bulk_temp", "sat_temp"
     ]
-    expected_heater_params = [
-        "wallTemp",
-        "xMin",
-        "xMax"
-    ]
-    expected_global_params = [
-        "gravy"
-    ]
-    expected_fields = [
-        "dfun", # sdf
-        "temperature",
-        "velx",
-        "vely"
-    ]
+    expected_heater_params = ["wallTemp", "xMin", "xMax"]
+    expected_global_params = ["gravy"]
+    expected_fields = ["dfun", "temperature", "velx", "vely"]
     num_sim_params = len(expected_fluid_params) + len(expected_heater_params) + len(expected_global_params)
     layout = "t h w c"
+
     def __init__(self, config: Nucleus2MoEConfig):
         super().__init__()
         self.config = config
         n_fields = len(self.expected_fields)
+
         self.embed = LinearEmbed(
             patch_size=config.patch_size,
             in_channels=n_fields,
             embed_dim=config.embed_dim,
+            dtype=config.embed_dtype
         )
 
-        # Every attention block reuses the same frequencies, so we only need to compute them once.
         self.rotary_emb = RotaryEmbedding(
-            # NOTE: This must be smaller than the head dim.
             dim=(config.embed_dim // config.num_heads) // 3,
             freqs_for="pixel",
             max_freq=256,
-            # We want a [Batch, Seq1, Seq2, Seq3, Heads, Dim] layout
             seq_before_head_dim=True
         )
 
-        self.drop_path_probs = torch.linspace(0.0, 0.1, config.processor_blocks)
-
+        drop_path_probs = torch.linspace(0.0, 0.1, config.processor_blocks)
         self.blocks = nn.ModuleList([
             TransformerMoEBlock(
-                embed_dim=config.embed_dim,
-                num_heads=config.num_heads,
-                num_experts=config.num_experts,
-                topk=config.topk,
+                config=config,
                 num_sim_params=self.num_sim_params,
-                drop_path_prob=self.drop_path_probs[idx].item(),
-                mlp_ratio=config.mlp_ratio,
+                drop_path_prob=drop_path_probs[idx].item(),
             )
             for idx in range(config.processor_blocks)
         ])
@@ -160,59 +163,53 @@ class MoEBase(nn.Module):
         self.debed = LinearDebed(
             patch_size=config.patch_size,
             embed_dim=config.embed_dim,
-            out_channels=n_fields
+            out_channels=n_fields,
+            dtype=config.debed_dtype
         )
 
     def get_extra_state(self):
-        return {"model_name": getattr(self, "_model_name", None), "config": dataclasses.asdict(self.config)}
+        return {"model_name": getattr(self, "_model_name", None), "config": _config_to_dict(self.config)}
 
     def set_extra_state(self, state):
         self._model_name = state.get("model_name")
-        self.config = Nucleus2MoEConfig(**state["config"])
+        self.config = _config_from_dict(state["config"])
 
     def forward(self, batch: CollatedBatch) -> torch.Tensor:
         return self.step(batch.input, batch.sim_params_tensor)
-        
-    def step(self, input: torch.Tensor, sim_params: torch.Tensor):        
+
+    def step(self, input: torch.Tensor, sim_params: torch.Tensor):
         """
-        x: (B, T, H, W, C)
+        input: (B, T, H, W, C)
         sim_params: (B, num_sim_params)
         """
         assert input.dtype == torch.float32
         assert sim_params.dtype == torch.float32
 
-        x = input
-        
         with record_function("encode"):
-            x = embed = self.embed(x)
-        
-        # Get axial frequencies for rotary embedding.
-        # We expand the dims so that it matches [B, T, H, W, heads, head_dim] used in the attention layers.
-        # These are unlearned, so do with no_grad.
+            x = embed = self.embed(input)
+
         with record_function("get_axial_freqs"):
             with torch.no_grad():
                 _, embed_t, embed_h, embed_w, _ = embed.shape
                 rotary_freqs = self.rotary_emb.get_axial_freqs(embed_t, embed_h, embed_w)[None, :, :, :, None, :]
 
-        # Attention blocks, tracking the MoE output for the routing losses
         moe_outputs = []
         for idx, blk in enumerate(self.blocks):
             with record_function(f"block_{idx}"):
-               x, moe_output = blk(x, rotary_freqs, sim_params)
-               moe_outputs.append(moe_output)
-        
-        # Skip connections from patch embeddings
-        x = x + embed 
+                x, moe_output = blk(x, rotary_freqs, sim_params)
+                moe_outputs.append(moe_output)
+
+        x = x + embed
 
         with record_function("debed"):
             x = self.out_norm(x)
             x = self.debed(x)
 
-        return x, moe_outputs
-    
+        return x.to(torch.float32), moe_outputs
+
     def forward_trajectory(
-        self, 
-        initial_state: torch.Tensor, 
+        self,
+        initial_state: torch.Tensor,
         sim_params: torch.Tensor,
         dx: float,
         input_time_window_size: int,
@@ -232,7 +229,7 @@ class MoEBase(nn.Module):
         for _ in range(input_time_window_size, trajectory_steps, output_time_window_size):
             pred, moe_outputs = self.step(trajectory[:, -input_time_window_size:], sim_params)
             output_time_window = pred[:, -output_time_window_size:]
-            
+
             if use_sdf_reinit:
                 output_time_window[..., 0] = sdf_reinit_sussman(output_time_window[..., 0], dx=dx, n_iter=5)
 
@@ -243,6 +240,7 @@ class MoEBase(nn.Module):
         if return_moe_outputs:
             return trajectory, trajectory_moe_outputs
         return trajectory
+
 
 @register_model("nucleus2_moe")
 class Nucleus2MoE(MoEBase):

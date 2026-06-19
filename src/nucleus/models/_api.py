@@ -69,6 +69,12 @@ def load_model_from_checkpoint(path, map_location=None) -> nn.Module:
     if model_name is None or config_dict is None:
         raise ValueError("'_extra_state' is missing 'model_name' or 'config'.")
 
-    model = get_model(model_name, **config_dict)
+    fn = MODELS[model_name]
+    if hasattr(fn, "config_from_dict"):
+        config = fn.config_from_dict(config_dict)
+        model = fn(config)
+        model._model_name = model_name
+    else:
+        model = get_model(model_name, **config_dict)
     model.load_state_dict(model_state)
     return model

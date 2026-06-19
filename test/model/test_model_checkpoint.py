@@ -76,7 +76,8 @@ def test_config_in_state_dict(model_name):
     sd = model.state_dict()
     assert "_extra_state" in sd
     assert sd["_extra_state"]["model_name"] == model_name
-    assert sd["_extra_state"]["config"] == dataclasses.asdict(model.config)
+    expected = model.get_extra_state()["config"]
+    assert sd["_extra_state"]["config"] == expected
 
 
 @pytest.mark.parametrize("model_name", list(EXPECTED_CONFIGS))

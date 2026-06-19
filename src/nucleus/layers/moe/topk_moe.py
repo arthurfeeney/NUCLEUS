@@ -285,7 +285,7 @@ class TopkMoE(nn.Module):
         
         # NOTE with torch.compile(fullgraph=True), the grouped gemm kernel does not support torch.float32, 
         # so the input data has to be truncated to bfloat 16.
-        groups = x.to(torch.bfloat16)[router_output.indices // self.topk]        
+        groups = x[router_output.indices // self.topk]        
 
         groups = torch.nn.functional.grouped_mm(groups, self.w1.mT, offs=router_output.group_indices)
         groups = F.gelu(groups)
@@ -303,7 +303,7 @@ class TopkMoE(nn.Module):
         router_output.topk_indices = router_output.topk_indices.view(B, T, H, W, self.topk).detach()
         
         return TopkMoEOutput(
-            out=out.to(torch.float32), 
+            out=out, 
             router_output=router_output,
             topk=self.topk,
             num_experts=self.num_experts,
