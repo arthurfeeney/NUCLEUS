@@ -164,10 +164,11 @@ class MoEBase(nn.Module):
         )
 
     def get_extra_state(self):
-        return dataclasses.asdict(self.config)
+        return {"model_name": getattr(self, "_model_name", None), "config": dataclasses.asdict(self.config)}
 
     def set_extra_state(self, state):
-        self.config = Nucleus2MoEConfig(**state)
+        self._model_name = state.get("model_name")
+        self.config = Nucleus2MoEConfig(**state["config"])
 
     def forward(self, batch: CollatedBatch) -> torch.Tensor:
         return self.step(batch.input, batch.sim_params_tensor)

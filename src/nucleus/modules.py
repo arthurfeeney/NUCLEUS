@@ -4,7 +4,6 @@ from typing import Tuple, Optional, List
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
-from collections import OrderedDict
 import torch
 from torch.optim import AdamW, Adam, Muon
 from lion_pytorch import Lion
@@ -14,7 +13,7 @@ import lightning as L
 
 from nucleus.data.batching import CollatedBatch
 from nucleus.data.normalize import get_normalizer
-from nucleus.models import get_model
+from nucleus.models import get_model, load_model_from_checkpoint
 from nucleus.utils.lr_schedulers import CosineWarmupLR, TrapezoidalLR
 #from nucleus.utils.plot_utils import wandb_sdf_plotter, wandb_temp_plotter, wandb_vel_plotter
 from nucleus.layers.moe.topk_moe import TopkRouterWithBias
@@ -66,18 +65,10 @@ class ForecastModule(L.LightningModule):
         self.z_loss_weight = self.model_cfg["params"].pop("z_loss_weight", 0.0)
         self.num_windows = self.model_cfg["params"].pop("num_windows", 3)
 
-        self.model_cfg["params"]["input_fields"] = len(self.data_cfg["input_fields"])
-        self.model_cfg["params"]["output_fields"] = len(self.data_cfg["output_fields"])
-        
-        self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
         if self.checkpoint_path is not None:
-            model_data = torch.load(self.checkpoint_path, weights_only=False)
-            weight_state_dict = OrderedDict()
-            for key, val in model_data["state_dict"].items():
-                #name = key[6:]
-                weight_state_dict[key] = val
-            del model_data
-            self.load_state_dict(weight_state_dict)
+            self.model = load_model_from_checkpoint(self.checkpoint_path)
+        else:
+            self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
 
         self.save_hyperparameters()
         self.t_max = None

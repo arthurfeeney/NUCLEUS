@@ -99,10 +99,11 @@ class Nucleus1ViTBase(nn.Module):
         self.vel_proj = nn.Conv2d(config.embed_dim, 2, kernel_size=3, padding=1, dtype=torch.float32)
 
     def get_extra_state(self):
-        return dataclasses.asdict(self.config)
+        return {"model_name": getattr(self, "_model_name", None), "config": dataclasses.asdict(self.config)}
 
     def set_extra_state(self, state):
-        self.config = Nucleus1ViTConfig(**state)
+        self._model_name = state.get("model_name")
+        self.config = Nucleus1ViTConfig(**state["config"])
 
     def forward(self, batch: CollatedBatch) -> torch.Tensor:
         return self.step(batch.input, batch.sim_params_tensor)

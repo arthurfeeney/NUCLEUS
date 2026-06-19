@@ -9,7 +9,8 @@ from ._api import (
     register_model,
     list_models,
     get_model,
-    get_model_class
+    get_model_class,
+    load_model_from_checkpoint,
 )
 
 # This is just a stupid wrapper to register the model and initialize with a dictionary.
