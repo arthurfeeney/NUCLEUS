@@ -6,8 +6,10 @@ shape [T, H, W], plus a sidecar JSON file with simulation parameters.
 
 This script slices each file into non-overlapping windows of `--time_window_size`
 timesteps and writes them as webdataset shards. Each sample in the shard contains:
-  - <key>.npz  : compressed float32 array of shape [T, H, W, 4] (fields: dfun, temp, velx, vely),
+  - <key>.npz  : (with --compress) compressed float32 array of shape [T, H, W, 4],
                  stored under the key "fields" (access as sample["npz"]["fields"])
+  - <key>.npy  : (without --compress) uncompressed float32 array of shape [T, H, W, 4],
+                 accessible directly as sample["npy"]
   - <key>.json : simulation parameters from the sidecar JSON
 
 Samples are globally shuffled before writing so that temporally-adjacent chunks
@@ -75,6 +77,7 @@ def parse_args() -> argparse.Namespace:
                              "Shell globs are expanded by the shell, e.g. --hdf5_dir PoolBoiling-*")
     parser.add_argument("--out_dir", type=str, required=True,
                         help="Output directory for webdataset tar shards.")
+    parser.add_argument("--compress", action="store_true", default=False)
     parser.add_argument("--time_window_size", type=int, default=32,
                         help="Number of timesteps per sample window.")
     parser.add_argument("--shard_size_gb", type=float, default=1.0,
@@ -118,21 +121,26 @@ def read_chunk(hdf5_path: str, chunk_idx: int, time_window_size: int) -> np.ndar
 
 def process_chunk(args: tuple[str, int, int, dict]) -> tuple[str, bytes, bytes]:
     """Worker function: read one chunk, compress it, and return serialized bytes."""
-    hdf5_path, chunk_idx, time_window_size, sim_params = args
+    hdf5_path, compress, chunk_idx, time_window_size, sim_params = args
     stem = Path(hdf5_path).stem
     sample_key = f"{stem}_chunk_{chunk_idx:06d}"
     fields_array = read_chunk(hdf5_path, chunk_idx, time_window_size)
-    return sample_key, array_to_bytes(fields_array), json.dumps(sim_params).encode("utf-8")
+    array_key = "npz" if compress else "npy"
+    return sample_key, array_key, array_to_bytes(fields_array, compress), json.dumps(sim_params).encode("utf-8")
 
 
-def array_to_bytes(array: np.ndarray) -> bytes:
+def array_to_bytes(array: np.ndarray, compress: bool) -> bytes:
     buf = io.BytesIO()
-    np.savez_compressed(buf, fields=array)
+    if compress:
+        np.savez_compressed(buf, fields=array)
+    else:
+        np.save(buf, array, allow_pickle=False)
     return buf.getvalue()
 
 
 def write_split(
     split_name: str,
+    compress: bool,
     chunk_indices: list[tuple[str, int]],
     sim_params_cache: dict[str, dict],
     time_window_size: int,
@@ -145,7 +153,7 @@ def write_split(
     shard_pattern = os.path.join(split_dir, "shard-%06d.tar")
 
     tasks = [
-        (hdf5_path, chunk_idx, time_window_size, sim_params_cache[hdf5_path])
+        (hdf5_path, compress, chunk_idx, time_window_size, sim_params_cache[hdf5_path])
         for hdf5_path, chunk_idx in chunk_indices
     ]
 
@@ -153,8 +161,8 @@ def write_split(
     with Pool(num_workers) as pool:
         results = pool.imap_unordered(process_chunk, tasks, chunksize=1)
         with wds.ShardWriter(shard_pattern, maxsize=max_shard_bytes) as sink:
-            for sample_key, npz_bytes, json_bytes in results:
-                sink.write({"__key__": sample_key, "npz": npz_bytes, "json": json_bytes})
+            for sample_key, array_key, array_bytes, json_bytes in results:
+                sink.write({"__key__": sample_key, array_key: array_bytes, "json": json_bytes})
                 total += 1
     return total
 
@@ -200,6 +208,7 @@ def main():
         print(f"\nWriting {split_name} ({len(chunk_indices)} samples) ...")
         total = write_split(
             split_name=split_name,
+            compress=args.compress,
             chunk_indices=chunk_indices,
             sim_params_cache=sim_params_cache,
             time_window_size=args.time_window_size,
