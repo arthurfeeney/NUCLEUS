@@ -277,11 +277,12 @@ class ConditionedForecastModule(ForecastModule):
         )
         
     def on_before_optimizer_step(self, optimizer):
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(),
-            max_norm=float("inf"),  # not clipping. Only used to get grad norm.
-        )
-        self.log("train/grad_norm", grad_norm, on_step=True, on_epoch=False)
+        if self.global_step % 100 == 0:
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=float("inf"),  # not clipping. Only used to get grad norm.
+            )
+            self.log("train/grad_norm", grad_norm, on_step=True, on_epoch=False)
 
     def transfer_batch_to_device(self, batch: CollatedBatch, device: torch.device, dataloader_idx: int):
         r"""
@@ -498,14 +499,6 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             mae_loss = torch.nn.functional.l1_loss(pred.detach(), batch.target.detach())
             mse_loss = torch.nn.functional.mse_loss(pred.detach(), batch.target.detach())
             absmax_error = (pred.detach() - batch.target.detach()).abs().max()
-            eikonal_error = (1 - eikonal(pred[..., 0].detach(), batch.dx[0].item(), batch.dy[0].item())).abs().mean()
-            liquid_divergence_value = liquid_divergence(
-                pred[..., 2].detach(), 
-                pred[..., 3].detach(), 
-                pred[..., 0].detach(),
-                batch.dx[0].item(), 
-                batch.dy[0].item()
-            ).mean()
 
         log_dict = {
             "train/loss": loss,
@@ -513,8 +506,6 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             "train/mae_loss": mae_loss,
             "train/mse_loss": mse_loss,
             "train/absmax_error": absmax_error,
-            "train/eikonal_loss": eikonal_error,
-            "train/liquid_divergence": liquid_divergence_value,
             "train/step": self.global_step,
             "train/learning_rate": self.get_current_lr(),
         }
@@ -525,6 +516,16 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         # compute expensive metrics less frequently
         if self.global_step % 100 == 0:
             with torch.no_grad():
+                eikonal_error = (1 - eikonal(pred[..., 0].detach(), batch.dx[0].item(), batch.dy[0].item())).abs().mean()
+                liquid_divergence_value = liquid_divergence(
+                    pred[..., 2].detach(), 
+                    pred[..., 3].detach(), 
+                    pred[..., 0].detach(),
+                    batch.dx[0].item(), 
+                    batch.dy[0].item()
+                ).mean()
+                log_dict["train/eikonal_loss"] = eikonal_error
+                log_dict["train/liquid_divergence"] = liquid_divergence_value
                 log_dict["train/input_mean"] = inp.input.mean().item()
                 log_dict["train/input_std"] = inp.input.std().item()
                 log_dict["train/target_mean"] = batch.target.mean().item()
