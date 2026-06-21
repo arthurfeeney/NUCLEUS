@@ -1,6 +1,7 @@
-log_dir:
-checkpoint_path:
+log_dir: # directory to write logs, model checkpoints, profiles,
+checkpoint_path: # path to resume training
 commit_sha:
+profile: # use pytorch profiler
 
 seed: 42
 
