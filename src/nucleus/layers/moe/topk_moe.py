@@ -275,36 +275,36 @@ class TopkMoE(nn.Module):
         """
         assert x.dim() == 5, "Input tensor must be of shape (B, T, H, W, C)"
         B, T, H, W, C = x.shape
-        
-        # flatten x because the MoE is applied to each patch independently.
-        input_shape = x.shape
-        x = x.view(-1, input_shape[-1])
-        batch_size = x.shape[0]
-        
-        # Router is always applied in float32 to help stability.
-        router_output = self.router(x.to(torch.float32))
-        
-        # NOTE with torch.compile(fullgraph=True), the grouped gemm kernel does not support torch.float32, 
-        # so the input data has to be truncated to bfloat 16.
-        groups = x[router_output.indices // self.topk]        
 
-        groups = torch.nn.functional.grouped_mm(groups, self.w1.mT, offs=router_output.group_indices)
-        groups = F.gelu(groups)
-        groups = torch.nn.functional.grouped_mm(groups, self.w2.mT, offs=router_output.group_indices)
-        
-        # Scatter the tokens to [B, topk, hidden_dim]
-        scattered = torch.empty_like(groups)
-        scattered[router_output.indices] = groups
-        scattered = scattered.view(batch_size, self.topk, self.hidden_dim)
-        
-        # reduce the output tokens and scale by the routing probability
-        out = (scattered * router_output.topk_probs.unsqueeze(-1)).sum(dim=1).view(input_shape)
-        
-        # Convert to convenient shape for visualization.
-        router_output.topk_indices = router_output.topk_indices.view(B, T, H, W, self.topk).detach()
-        
+        input_shape = x.shape
+        x_flat = x.view(-1, input_shape[-1])  # (N, C)
+        N = x_flat.shape[0]
+
+        # Router is always applied in float32 to help stability.
+        router_output = self.router(x_flat.to(torch.float32))
+
+        topk_indices = router_output.topk_indices.view(N, self.topk)
+        topk_probs = router_output.topk_probs.view(N, self.topk).to(torch.bfloat16)
+
+        out = torch.zeros_like(x_flat)
+
+        # Iterate over each expert. torch.compile unrolls this static loop.
+        # Avoids grouped_mm's internal device-to-host transfer of group offsets.
+        for e in range(self.num_experts):
+            # Routing weight for this expert per token (0 if token not routed here).
+            expert_weights = (topk_probs * (topk_indices == e)).sum(dim=1)  # (N,)
+            token_idx = expert_weights.nonzero(as_tuple=True)[0]            # (n_e,)
+
+            x_e = x_flat[token_idx]                                     # (n_e, C)
+            h = F.gelu(x_e @ self.w1[e].mT)                             # (n_e, intermediate)
+            out_e = h @ self.w2[e].mT                                   # (n_e, C)
+
+            out.index_add_(0, token_idx, out_e * expert_weights[token_idx].unsqueeze(-1))
+
+        router_output.topk_indices = topk_indices.view(B, T, H, W, self.topk).detach()
+
         return TopkMoEOutput(
-            out=out, 
+            out=out.view(input_shape),
             router_output=router_output,
             topk=self.topk,
             num_experts=self.num_experts,
