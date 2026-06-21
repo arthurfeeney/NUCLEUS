@@ -1,17 +1,9 @@
 import torch
 import torch.nn as nn
-from einops import rearrange
-import einops
-from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
+from rotary_embedding_torch import apply_rotary_emb
 import natten
 
-NATTEN_CONFIG_CUDA = {}
-NATTEN_CONFIG_CPU = {}
-
-NATTEN_CONFIG = {
-    "cuda": NATTEN_CONFIG_CUDA,
-    "cpu": NATTEN_CONFIG_CPU
-}
+from .natten_configs import get_natten_config
 
 class NeighborhoodAttention(nn.Module):
     r"""
@@ -42,7 +34,7 @@ class NeighborhoodAttention(nn.Module):
         natten.set_memory_usage_preference(pref='unrestricted')
 
     def forward(self, x, freqs):
-        b, t, h, w, c = x.shape
+        b, t, h, w, _ = x.shape
         
         heads = self.input_head(x).view(b, t, h, w, self.num_heads, 3 * self.head_dim)
         
@@ -59,7 +51,7 @@ class NeighborhoodAttention(nn.Module):
             kernel_size=(t, self.kernel_size, self.kernel_size),
             stride=1,
             dilation=1,
-            **NATTEN_CONFIG[x.device.type]
+            **get_natten_config(x.device)
         )
         
         output = output.view(b, t, h, w, self.num_heads * self.head_dim)
