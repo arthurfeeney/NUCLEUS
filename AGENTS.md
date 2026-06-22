@@ -8,6 +8,8 @@
   - `config/`: yaml files to configure model training experiments.
   - `test/`: unit tests written with pytest. All unit tests should go here.
 
+dependencies are managed using `uv`.
+
 ## Python Code Style
 
 - Follow PEP 8 and use type hints when available. 
@@ -15,6 +17,7 @@
 - Prefer small, testable functions (< 30 lines) that have descriptive names.
 - Avoid duplicating code. If two functions share a large code block, write a separate function implementing the common code.
 - Avoid writing comments for things that will be clear from reading the implementation.
+- inline comments should explain WHY something is done, not WHAT is being done
 
 ## Commands you can use
 
@@ -26,6 +29,14 @@ source .venv/bin/activate
 uv sync --extra cpu --no-cache
 ```
 
+Similarly, for GPU
+
+```console
+uv venv
+source .venv/bin/activate
+uv sync --extra cu130 --no-cache
+```
+
 Run the unit tests:
 
 ```console
@@ -35,3 +46,14 @@ python -m pytest test/
 All unit tests should pass or be skipped. No tests should fail.
 You should not edit a correct, but failing test to force it to pass. You should
 always correct the code in `src/nucleus`.
+
+You can also run a benchmark to time the nucleus2_moe.
+
+## Slurm
+
+If a GPU is available, you can run the benchmark
+
+```console
+python bench/nucleus2_moe.py \
+  --backward # time both the forward and backward pass
+```
