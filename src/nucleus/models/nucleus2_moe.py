@@ -10,8 +10,8 @@ from nucleus.layers.attention import NeighborhoodAttention
 from nucleus.layers.moe.topk_moe import TopkMoE, TopkMoEOutput, TopkRouterWithBias
 from nucleus.layers.droppath import DropPath
 from nucleus.layers import (
-    LinearEmbed,
-    LinearDebed,
+    AdaptiveEmbed,
+    AdaptiveDebed,
 )
 from nucleus.data.batching import CollatedBatch
 from nucleus.utils.sdf_reinit import sdf_reinit_sussman
@@ -136,12 +136,13 @@ class MoEBase(nn.Module):
         self.embed_dtype = config.embed_dtype
         n_fields = len(self.expected_fields)
 
+        """
         self.embed = LinearEmbed(
             patch_size=config.patch_size,
             in_channels=n_fields,
             embed_dim=config.embed_dim,
             dtype=config.embed_dtype
-        )
+        )"""
 
         self.rotary_emb = RotaryEmbedding(
             dim=(config.embed_dim // config.num_heads) // 3,
@@ -161,11 +162,23 @@ class MoEBase(nn.Module):
         ])
 
         self.out_norm = nn.RMSNorm(config.embed_dim, dtype=config.debed_dtype)
+        """
         self.debed = LinearDebed(
             patch_size=config.patch_size,
             embed_dim=config.embed_dim,
             out_channels=n_fields,
             dtype=config.debed_dtype
+        )
+        """
+        
+        self.embed = AdaptiveEmbed(
+            in_channels=n_fields,
+            out_channels=config.embed_dim,
+            out_shape=(16, 16),
+        )
+        self.debed = AdaptiveDebed(
+            in_channels=config.embed_dim,
+            out_channels=n_fields
         )
 
     def get_extra_state(self):
@@ -185,6 +198,8 @@ class MoEBase(nn.Module):
         """
         assert input.dtype == torch.float32
         assert sim_params.dtype == torch.float32
+        
+        _, _, h, w, _ = x.shape
 
         with record_function("encode"):
             x = embed = self.embed(input.to(self.config.embed_dtype))
@@ -205,7 +220,7 @@ class MoEBase(nn.Module):
         with record_function("debed"):
             x = x.to(self.config.debed_dtype)
             x = self.out_norm(x)
-            x = self.debed(x)
+            x = self.debed(x, target_shape=(h, w))
 
         return x.to(torch.float32), moe_outputs
 
@@ -245,5 +260,6 @@ class MoEBase(nn.Module):
 
 
 @register_model("nucleus2_moe")
+@torch.compile(fullgraph=True)
 class Nucleus2MoE(MoEBase):
     pass

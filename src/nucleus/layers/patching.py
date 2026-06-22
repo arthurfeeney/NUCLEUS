@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+from typing import Tuple
 import einops
 
 class HMLPEmbed(nn.Module):
@@ -141,3 +142,57 @@ class LinearDebed(nn.Module):
         x = self.linear(x)
         x = einops.rearrange(x, "b t h w (c p1 p2) -> b t (h p1) (w p2) c", p1=self.patch_size, p2=self.patch_size)
         return x
+    
+class AdaptiveDebed(nn.Module):
+    """
+    Inverts AdaptiveEmbed: upsamples from patch space back to an arbitrary
+    target resolution using bilinear interpolation, then projects channels.
+
+    Input:  [..., out_H, out_W, in_channels]
+    Output: [..., H, W, out_channels]
+
+    The target spatial size (H, W) is passed at forward time since it is
+    determined by the original input resolution, which varies at runtime.
+    """
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.linear = nn.Linear(in_channels, out_channels, bias=False)
+
+    def forward(self, x: torch.Tensor, target_shape: Tuple[int, int]) -> torch.Tensor:
+        leading = x.shape[:-3]
+        h, w, c = x.shape[-3], x.shape[-2], x.shape[-1]
+
+        flat = x.reshape(-1, h, w, c).permute(0, 3, 1, 2)
+        flat = torch.nn.functional.interpolate(flat, size=target_shape, mode="bilinear", align_corners=False)
+        flat = flat.permute(0, 2, 3, 1)
+
+        out = self.linear(flat.reshape(*leading, *target_shape, c))
+        return out
+
+
+class AdaptiveEmbed(nn.Module):
+    """
+    Breaks an arbitrary-resolution input into patches by average pooling to a
+    fixed output shape. Patch size is implicitly (H / out_H, W / out_W) and
+    adapts to whatever resolution is passed at runtime.
+
+    Input:  [..., H, W, C]
+    Output: [..., out_H, out_W, C]
+    """
+    def __init__(self, in_channels, out_channels, out_shape: Tuple[int, int]):
+        super().__init__()
+        self.linear = nn.Linear(in_channels, out_channels, bias=False)
+        self.out_shape = out_shape
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        leading = x.shape[:-3]
+        
+        x = self.linear(x)
+
+        # AdaptiveAvgPool2d expects (N, C, H, W)
+        h, w, c = x.shape[-3], x.shape[-2], x.shape[-1]
+        flat = x.reshape(-1, h, w, c).permute(0, 3, 1, 2)
+        flat = torch.nn.functional.adaptive_avg_pool2d(flat, self.out_shape)
+        flat = flat.permute(0, 2, 3, 1)
+
+        return flat.reshape(*leading, *self.out_shape, c)
