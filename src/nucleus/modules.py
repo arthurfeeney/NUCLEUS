@@ -47,14 +47,12 @@ class ForecastModule(L.LightningModule):
         normalization_constants: Tuple[List, List] = None
     ):
         super().__init__()
-        # whole model config to be saved to the checkpoint
-        self.save_hyperparameters()
-
         self.checkpoint_path = checkpoint_path
         self.model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
         self.data_cfg = OmegaConf.to_container(data_cfg, resolve=True)
         self.optimizer_cfg = OmegaConf.to_container(optim_cfg, resolve=True)
         self.scheduler_cfg = OmegaConf.to_container(scheduler_cfg, resolve=True)
+        self.save_hyperparameters(ignore=["model_cfg", "data_cfg", "normalizer_cfg", "optim_cfg", "scheduler_cfg"])
         if normalization_constants is not None:
             self.normalization_constants = normalization_constants
         self.log_wandb = log_wandb
@@ -70,7 +68,6 @@ class ForecastModule(L.LightningModule):
         else:
             self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
 
-        self.save_hyperparameters()
         self.t_max = None
         self.validation_sample = None
         self.train_start_time = None
@@ -412,26 +409,26 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
                 max_router_logit = moe_output.router_logits.abs().max()
 
             # check the mean router logit
-            log_dict[f"{prefix}_moe/mean_router_logit_layer{moe_idx}"] = mean_router_logit.item()
+            log_dict[f"{prefix}_moe/mean_router_logit_layer{moe_idx}"] = mean_router_logit#.item()
 
             # check the max router logit
-            log_dict[f"{prefix}_moe/max_router_logit_layer{moe_idx}"] = max_router_logit.item()
+            log_dict[f"{prefix}_moe/max_router_logit_layer{moe_idx}"] = max_router_logit#.item()
 
             # perfect balance is 0, while 1 is imbalanced.
-            coeff_of_variation = (tpe.std() / tpe.mean()).item()
+            coeff_of_variation = (tpe.std() / tpe.mean())#.item()
             log_dict[f"{prefix}_moe/coeff_of_variation_layer{moe_idx}"] = coeff_of_variation
 
             # Check the ratio of max load to the mean load.
             # Ideally, this metric should be close to 1.
             load_imbalance_factor = tpe.max() / tpe.mean()
-            log_dict[f"{prefix}_moe/load_imbalance_factor_layer{moe_idx}"] = load_imbalance_factor.item()
+            log_dict[f"{prefix}_moe/load_imbalance_factor_layer{moe_idx}"] = load_imbalance_factor#.item()
 
             # Check if any experts receive less than 1% of the tokens.
             # ideally, this metric should be 1.
             min_fraction = 0.01
             threshold = tpe.sum() * min_fraction
             active = (tpe > threshold).float().mean()
-            log_dict[f"{prefix}_moe/active_experts_layer{moe_idx}"] = active.item()
+            log_dict[f"{prefix}_moe/active_experts_layer{moe_idx}"] = active#.item()
         return log_dict
 
     def training_step(
@@ -477,21 +474,20 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             mse_loss = torch.nn.functional.mse_loss(pred.detach(), batch.target.detach())
             absmax_error = (pred.detach() - batch.target.detach()).abs().max()
 
-        log_dict = {
-            "train/loss": loss,
-            "train/data_loss": data_loss,
-            "train/mae_loss": mae_loss,
-            "train/mse_loss": mse_loss,
-            "train/absmax_error": absmax_error,
-            "train/step": self.global_step,
-            "train/learning_rate": self.get_current_lr(),
-        }
-        if hasattr(moe_outputs[0], 'router_output') and router_with_loss:
-            log_dict["train_moe/load_balance_loss"] = router_load_balance_loss
-            log_dict["train_moe/z_loss"] = router_z_loss
-        
-        with torch.no_grad():
-            eikonal_error = (1 - eikonal(pred[..., 0].detach(), batch.dx[0].item(), batch.dy[0].item())).abs().mean()
+            log_dict = {
+                "train/loss": loss,
+                "train/data_loss": data_loss,
+                "train/mae_loss": mae_loss,
+                "train/mse_loss": mse_loss,
+                "train/absmax_error": absmax_error,
+                "train/step": self.global_step,
+                "train/learning_rate": self.get_current_lr(),
+            }
+            if hasattr(moe_outputs[0], 'router_output') and router_with_loss:
+                log_dict["train_moe/load_balance_loss"] = router_load_balance_loss
+                log_dict["train_moe/z_loss"] = router_z_loss
+            
+            eikonal_error = (1 - eikonal(pred[..., 0].detach(), batch.dx[0].item(), batch.dy[0].item()).abs()).mean()
             liquid_divergence_value = liquid_divergence(
                 pred[..., 2].detach(), 
                 pred[..., 3].detach(), 
@@ -501,12 +497,6 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             ).mean()
             log_dict["train/eikonal_loss"] = eikonal_error
             log_dict["train/liquid_divergence"] = liquid_divergence_value
-            log_dict["train/input_mean"] = inp.input.mean().item()
-            log_dict["train/input_std"] = inp.input.std().item()
-            log_dict["train/target_mean"] = batch.target.mean().item()
-            log_dict["train/target_std"] = batch.target.std().item()
-            log_dict["train/pred_mean"] = pred.mean().item()
-            log_dict["train/pred_std"] = pred.std().item()
             log_dict = self.moe_metrics(moe_outputs, log_dict, "train")
 
         self.default_log_dict(log_dict)
