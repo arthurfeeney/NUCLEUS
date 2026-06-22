@@ -286,12 +286,12 @@ class ConditionedForecastModule(ForecastModule):
 
     def transfer_batch_to_device(self, batch: CollatedBatch, device: torch.device, dataloader_idx: int):
         r"""
-        Since our batch is in a dataclass, pytorch and lightning cannot figure out how to pin memory and
-        asynchrously transfer the batch to the device. So, we do this manually.
+        CollatedBatch is a dataclass so Lightning cannot auto-pin or transfer it.
+        pin_memory() is already called by the DataLoader workers (via the hasattr check
+        in torch's pin_memory utility), so we only need the async H2D transfer here.
         """
-        batch.sim_params_tensor = batch.get_sim_params_tensor('cpu')
-        pinned_batch = batch.pin_memory()
-        return pinned_batch.to(device, non_blocking=True)
+        batch.pin_memory()
+        return batch.to(device, non_blocking=True)
 
     def get_noise_scale(self):
         # During learning rate warmup, no noise is added.
@@ -471,29 +471,6 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             # nucleus1-style flat MoE output: fields are directly on the output object
             router_load_balance_loss = sum(moe_output.load_balance_loss for moe_output in moe_outputs)
             loss = data_loss + (router_load_balance_loss * self.load_balance_loss_weight)
-
-        if not self.automatic_optimization:
-            # MANUAL OPTIMIZATION IF USING MULTIPLE OPTIMIZERS
-            optimizers = self.optimizers()
-            if not isinstance(optimizers, list):
-                optimizers = [optimizers]
-            for opt in optimizers:
-                opt.zero_grad()
-            self.manual_backward(loss)
-            clip_val = self.optimizer_cfg.get("gradient_clip_val", 0) or float("inf")
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val)
-            for opt in optimizers:
-                opt.step()
-            # global_step is incremented by the number of optimizers.
-            # Subtracting to get the actual training step.
-            self.global_step -= len(optimizers) - 1
-
-            # MANUALLY APPLY SCHEDULER
-            schedulers = self.lr_schedulers()
-            if not isinstance(schedulers, list):
-                schedulers = [schedulers]
-            for scheduler in schedulers:
-                scheduler.step()
                 
         with torch.no_grad():
             mae_loss = torch.nn.functional.l1_loss(pred.detach(), batch.target.detach())
@@ -513,26 +490,24 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             log_dict["train_moe/load_balance_loss"] = router_load_balance_loss
             log_dict["train_moe/z_loss"] = router_z_loss
         
-        # compute expensive metrics less frequently
-        if self.global_step % 100 == 0:
-            with torch.no_grad():
-                eikonal_error = (1 - eikonal(pred[..., 0].detach(), batch.dx[0].item(), batch.dy[0].item())).abs().mean()
-                liquid_divergence_value = liquid_divergence(
-                    pred[..., 2].detach(), 
-                    pred[..., 3].detach(), 
-                    pred[..., 0].detach(),
-                    batch.dx[0].item(), 
-                    batch.dy[0].item()
-                ).mean()
-                log_dict["train/eikonal_loss"] = eikonal_error
-                log_dict["train/liquid_divergence"] = liquid_divergence_value
-                log_dict["train/input_mean"] = inp.input.mean().item()
-                log_dict["train/input_std"] = inp.input.std().item()
-                log_dict["train/target_mean"] = batch.target.mean().item()
-                log_dict["train/target_std"] = batch.target.std().item()
-                log_dict["train/pred_mean"] = pred.mean().item()
-                log_dict["train/pred_std"] = pred.std().item()
-                log_dict = self.moe_metrics(moe_outputs, log_dict, "train")
+        with torch.no_grad():
+            eikonal_error = (1 - eikonal(pred[..., 0].detach(), batch.dx[0].item(), batch.dy[0].item())).abs().mean()
+            liquid_divergence_value = liquid_divergence(
+                pred[..., 2].detach(), 
+                pred[..., 3].detach(), 
+                pred[..., 0].detach(),
+                batch.dx[0].item(), 
+                batch.dy[0].item()
+            ).mean()
+            log_dict["train/eikonal_loss"] = eikonal_error
+            log_dict["train/liquid_divergence"] = liquid_divergence_value
+            log_dict["train/input_mean"] = inp.input.mean().item()
+            log_dict["train/input_std"] = inp.input.std().item()
+            log_dict["train/target_mean"] = batch.target.mean().item()
+            log_dict["train/target_std"] = batch.target.std().item()
+            log_dict["train/pred_mean"] = pred.mean().item()
+            log_dict["train/pred_std"] = pred.std().item()
+            log_dict = self.moe_metrics(moe_outputs, log_dict, "train")
 
         self.default_log_dict(log_dict)
 
@@ -573,16 +548,14 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             "val/learning_rate": self.get_current_lr(),
         }
         
-        # compute expensive metrics less frequently
-        if self.global_step % 100 == 0:
-            with torch.no_grad():
-                log_dict["val/input_mean"] = inp.input.mean().item()
-                log_dict["val/input_std"] = inp.input.std().item()
-                log_dict["val/target_mean"] = batch.target.mean().item()
-                log_dict["val/target_std"] = batch.target.std().item()
-                log_dict["val/pred_mean"] = pred.mean().item()
-                log_dict["val/pred_std"] = pred.std().item()
-                log_dict = self.moe_metrics(moe_outputs, log_dict, "val")
+        with torch.no_grad():
+            log_dict["val/input_mean"] = inp.input.mean().item()
+            log_dict["val/input_std"] = inp.input.std().item()
+            log_dict["val/target_mean"] = batch.target.mean().item()
+            log_dict["val/target_std"] = batch.target.std().item()
+            log_dict["val/pred_mean"] = pred.mean().item()
+            log_dict["val/pred_std"] = pred.std().item()
+            log_dict = self.moe_metrics(moe_outputs, log_dict, "val")
 
         self.default_log_dict(log_dict)
 
