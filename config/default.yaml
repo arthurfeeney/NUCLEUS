@@ -9,8 +9,8 @@ nodes: 1
 devices: 1
 
 max_epochs:
-max_steps: 100000
-val_check_interval: 100
+max_steps: 200000
+val_check_interval: 5000
 batch_size: 16
 accumulate_grad_batches: 1
 
