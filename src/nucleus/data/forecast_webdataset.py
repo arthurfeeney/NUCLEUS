@@ -21,7 +21,7 @@ def forecast_web_dataset(
     layout: str,
     normalizer: Optional[Normalizer],
     augment: bool,
-    shuffle_buffer: int = 16,
+    shuffle_buffer: int = 32,
 ):
     def _decode_sample(sample: dict) -> Data:
         raw = sample["npz"]["fields"] if "npz" in sample else sample["npy"]
@@ -62,7 +62,17 @@ def forecast_web_dataset(
         shard_urls = list(braceexpand.braceexpand(shard_urls))
 
     pipeline = (
-        wds.WebDataset(shard_urls, cache_dir=cache_dir, cache_size=cache_size, shardshuffle=100 if augment else 0)
+        wds.WebDataset(
+            shard_urls,
+            cache_dir=cache_dir,
+            cache_size=cache_size,
+            shardshuffle=100 if augment else 0,
+            # Partition shards across nodes and workers so each worker reads a
+            # disjoint subset. Without this, all 8 workers read all shards,
+            # causing 8x redundant NFS I/O and duplicate samples per epoch.
+            nodesplitter=wds.split_by_node,
+            workersplitter=wds.split_by_worker,
+        )
         .decode()
     )
     if augment:

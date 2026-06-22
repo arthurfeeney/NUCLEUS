@@ -147,12 +147,13 @@ class Normalizer:
         assert data.dim() >= 4, "Data must be at least 4D (..., T, H, W, C)"
         assert data.shape[-1] == 4, "Data must have 4 channels (sdf, temp, velx, vely)"
         assert isinstance(bulk_temp, (int, float)) or data.shape[:-4] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
-        result = torch.stack([
-            self.normalize_sdf(data[..., 0]),
-            self.normalize_temp(data[..., 1], bulk_temp),
-            self.normalize_velx(data[..., 2]),
-            self.normalize_vely(data[..., 3]),
-        ], dim=-1)
+        # Clone once to avoid modifying the input, then normalize each channel
+        # in-place to avoid the 4 intermediate tensors that torch.stack creates.
+        result = data.clone()
+        result[..., 0] = self.normalize_sdf(result[..., 0])
+        result[..., 1] = self.normalize_temp(result[..., 1], bulk_temp)
+        result[..., 2] = self.normalize_velx(result[..., 2])
+        result[..., 3] = self.normalize_vely(result[..., 3])
         return result
 
     def unnormalize(self, data: torch.Tensor, bulk_temp: torch.Tensor, layout: str = "t h w c") -> torch.Tensor:
