@@ -20,6 +20,8 @@ from lightning.pytorch.callbacks import ModelSummary, Callback, ModelCheckpoint,
 from lightning.pytorch.callbacks.progress.rich_progress import RichProgressBarTheme
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 
+import braceexpand
+
 from nucleus.data.batching import collate
 from nucleus.data.normalize import get_normalizer
 from nucleus.data import ForecastDataset, InMemForecastDataset, forecast_web_dataset
@@ -193,16 +195,18 @@ def main(cfg: DictConfig) -> None:
 
     use_webdataset = any(str(p).endswith(".tar") for p in cfg.data_cfg.train_paths)
     if use_webdataset:
+        train_shard_urls = list(braceexpand.braceexpand(list(cfg.data_cfg.train_paths)[0]))
+
         train_dataset = forecast_web_dataset(
-            shard_urls=list(cfg.data_cfg.train_paths)[0],
-            cache_dir=None, #os.environ["TMPDIR"],
+            shard_urls=train_shard_urls,
+            cache_dir=None,
             cache_size=0,
-            augment=False,#True,
+            augment=True,
             **shared_dataset_kwargs,
         )
         val_dataset = forecast_web_dataset(
             shard_urls=list(cfg.data_cfg.val_paths)[0],
-            cache_dir=None, #os.environ["TMPDIR"],
+            cache_dir=None,
             cache_size=0,
             augment=False,
             **shared_dataset_kwargs,
@@ -217,12 +221,14 @@ def main(cfg: DictConfig) -> None:
         )
         train_dataset = dataset_cls(
             filenames=cfg.data_cfg.train_paths,
+            cache_dir=None,#os.environ["TMPDIR"],
             augment=True,
             **shared_dataset_kwargs,
             **hdf5_kwargs,
         )
         val_dataset = dataset_cls(
             filenames=cfg.data_cfg.val_paths,
+            cache_dir=None, #os.environ["TMPDIR"],
             augment=False,
             **shared_dataset_kwargs,
             **hdf5_kwargs,
@@ -232,11 +238,11 @@ def main(cfg: DictConfig) -> None:
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=not use_webdataset,
-        num_workers=8,
+        num_workers=16,
         pin_memory=True,
-        prefetch_factor=3,
+        prefetch_factor=2,
         persistent_workers=not use_webdataset,
-        #multiprocessing_context='fork',
+        multiprocessing_context='fork',
         collate_fn=collate_fn,
     )
     val_dataloader = DataLoader(
@@ -247,7 +253,7 @@ def main(cfg: DictConfig) -> None:
         pin_memory=True,
         prefetch_factor=3,
         persistent_workers=not use_webdataset,
-        #multiprocessing_context='fork',
+        multiprocessing_context='fork',
         collate_fn=collate_fn,
     )
 
