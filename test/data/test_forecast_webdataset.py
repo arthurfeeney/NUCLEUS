@@ -85,6 +85,7 @@ def make_dataset(shard_path: str, augment: bool = False) -> wds.WebDataset:
     return forecast_web_dataset(
         shard_urls=[shard_path],
         cache_dir=None,
+        cache_size=-1,
         history_time_window=HISTORY,
         future_time_window=FUTURE,
         fluid_params=["inv_reynolds", "cpgas", "mugas", "rhogas", "thcogas", "stefan", "prandtl", "gravy", "bulk_temp"],

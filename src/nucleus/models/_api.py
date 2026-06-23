@@ -52,7 +52,10 @@ def load_model_from_checkpoint(path, map_location=None) -> nn.Module:
         model = load_model_from_checkpoint("run/checkpoints/last.ckpt")
         model = load_model_from_checkpoint("last.ckpt", map_location="cuda")
     """
-    ckpt = torch.load(path, weights_only=True, map_location=map_location)
+    try:
+        ckpt = torch.load(path, weights_only=True, map_location=map_location)
+    except:
+        ckpt = torch.load(path, weights_only=False, map_location=map_location)
 
     if "state_dict" in ckpt:
         # Lightning checkpoint — strip the "model." prefix

@@ -138,25 +138,50 @@ class LinearDebed(nn.Module):
         self.embed_dim = embed_dim
         self.linear = nn.Linear(embed_dim, out_channels * patch_size ** 2, bias=False, dtype=dtype)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, target_shape: Tuple[int, int]) -> torch.Tensor:
         x = self.linear(x)
         x = einops.rearrange(x, "b t h w (c p1 p2) -> b t (h p1) (w p2) c", p1=self.patch_size, p2=self.patch_size)
+        assert x.shape[-3] == target_shape[0] and x.shape[-2] == target_shape[1]
         return x
     
+def _local_fourier_coords(
+    h: int, w: int, patch_shape: Tuple[int, int], num_freq_bands: int,
+    device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
+    """Local Fourier coordinates in [-1, 1] within each patch, tiled across (H, W)."""
+    assert h % patch_shape[0] == 0
+    assert w % patch_shape[1] == 0
+    patch_h = h // patch_shape[0]
+    patch_w = w // patch_shape[1]
+    local_ys = torch.linspace(-1, 1, patch_h, device=device, dtype=dtype)
+    local_xs = torch.linspace(-1, 1, patch_w, device=device, dtype=dtype)
+    grid_y, grid_x = torch.meshgrid(local_ys, local_xs, indexing="ij")
+    grid_y = grid_y.repeat(patch_shape[0], patch_shape[1])
+    grid_x = grid_x.repeat(patch_shape[0], patch_shape[1])
+    freqs = 2 ** torch.arange(num_freq_bands, device=device, dtype=dtype) * math.pi
+    y_angles = grid_y.unsqueeze(-1) * freqs
+    x_angles = grid_x.unsqueeze(-1) * freqs
+    return torch.cat([
+        torch.sin(y_angles), torch.cos(y_angles),
+        torch.sin(x_angles), torch.cos(x_angles),
+    ], dim=-1)  # (H, W, 4 * num_freq_bands)
+
+
 class AdaptiveDebed(nn.Module):
     """
     Inverts AdaptiveEmbed: upsamples from patch space back to an arbitrary
     target resolution using bilinear interpolation, then projects channels.
-
-    Input:  [..., out_H, out_W, in_channels]
-    Output: [..., H, W, out_channels]
+    Local Fourier coordinates are concatenated with the upsampled patch tokens
+    before the projection, mirroring AdaptiveEmbed.
 
     The target spatial size (H, W) is passed at forward time since it is
     determined by the original input resolution, which varies at runtime.
     """
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, out_channels: int, patch_shape: Tuple[int, int], dtype: torch.dtype, num_freq_bands: int = 4):
         super().__init__()
-        self.linear = nn.Linear(in_channels, out_channels, bias=False)
+        self.patch_shape = patch_shape
+        self.num_freq_bands = num_freq_bands
+        self.linear = nn.Linear(in_channels + 4 * num_freq_bands, out_channels, bias=False, dtype=dtype)
 
     def forward(self, x: torch.Tensor, target_shape: Tuple[int, int]) -> torch.Tensor:
         leading = x.shape[:-3]
@@ -164,10 +189,12 @@ class AdaptiveDebed(nn.Module):
 
         flat = x.reshape(-1, h, w, c).permute(0, 3, 1, 2)
         flat = torch.nn.functional.interpolate(flat, size=target_shape, mode="bilinear", align_corners=False)
-        flat = flat.permute(0, 2, 3, 1)
+        flat = flat.permute(0, 2, 3, 1).reshape(*leading, *target_shape, c)
 
-        out = self.linear(flat.reshape(*leading, *target_shape, c))
-        return out
+        coords = _local_fourier_coords(target_shape[0], target_shape[1], self.patch_shape, self.num_freq_bands, x.device, x.dtype)
+        flat = torch.cat([flat, coords.expand(*leading, *target_shape, 4 * self.num_freq_bands)], dim=-1)
+
+        return self.linear(flat)
 
 
 class AdaptiveEmbed(nn.Module):
@@ -176,22 +203,28 @@ class AdaptiveEmbed(nn.Module):
     fixed output shape. Patch size is implicitly (H / out_H, W / out_W) and
     adapts to whatever resolution is passed at runtime.
 
-    Input:  [..., H, W, C]
-    Output: [..., out_H, out_W, C]
+    Local Fourier coordinates are projected into embed space before pooling
+    so that within-patch position information survives the averaging step.
     """
-    def __init__(self, in_channels, out_channels, out_shape: Tuple[int, int]):
+    def __init__(self, in_channels, out_channels, out_shape: Tuple[int, int], dtype: torch.dtype, num_freq_bands: int = 4):
         super().__init__()
-        self.linear = nn.Linear(in_channels, out_channels, bias=False)
         self.out_shape = out_shape
+        self.num_freq_bands = num_freq_bands
+        self.linear = nn.Linear(in_channels, out_channels, bias=False, dtype=dtype)
+        self.coord_proj = nn.Linear(4 * num_freq_bands, out_channels, bias=False, dtype=dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         leading = x.shape[:-3]
-        
-        x = self.linear(x)
+        h, w = x.shape[-3], x.shape[-2]
 
-        # AdaptiveAvgPool2d expects (N, C, H, W)
-        h, w, c = x.shape[-3], x.shape[-2], x.shape[-1]
-        flat = x.reshape(-1, h, w, c).permute(0, 3, 1, 2)
+        coords = _local_fourier_coords(h, w, self.out_shape, self.num_freq_bands, x.device, x.dtype)
+        pos = self.coord_proj(coords)  # (H, W, out_channels)
+        
+        ll = self.linear(x) + pos
+
+        # adaptive_avg_pool2d expects (N, C, H, W)
+        c = ll.shape[-1]
+        flat = ll.reshape(-1, h, w, c).permute(0, 3, 1, 2)
         flat = torch.nn.functional.adaptive_avg_pool2d(flat, self.out_shape)
         flat = flat.permute(0, 2, 3, 1)
 

@@ -17,7 +17,8 @@ def model():
         processor_blocks=2,
         num_experts=4,
         topk=2,
-        moe_intermediate_dim=128
+        moe_intermediate_dim=128,
+        patching="linear"
     )
 
 @pytest.mark.parametrize("device", ["cpu"])

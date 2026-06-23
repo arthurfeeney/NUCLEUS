@@ -9,3 +9,5 @@ params:
   num_heads: 8
   num_experts: 6
   topk: 2
+  patching: "Linear"
+  activation_dtype: "bfloat16"

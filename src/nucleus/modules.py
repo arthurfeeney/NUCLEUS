@@ -18,6 +18,11 @@ from nucleus.utils.lr_schedulers import CosineWarmupLR, TrapezoidalLR
 #from nucleus.utils.plot_utils import wandb_sdf_plotter, wandb_temp_plotter, wandb_vel_plotter
 from nucleus.layers.moe.topk_moe import TopkRouterWithBias
 from nucleus.utils.physical_metrics import eikonal, liquid_divergence
+from nucleus.noise import (
+    LogUniformNoise,
+    FieldDropout,
+    FrameDropout
+)
 
 
 class ForecastModule(L.LightningModule):
@@ -59,8 +64,8 @@ class ForecastModule(L.LightningModule):
 
         self.criterion = torch.nn.L1Loss()
 
-        self.load_balance_loss_weight = self.model_cfg["params"].pop("load_balance_loss_weight", 0.0)
-        self.z_loss_weight = self.model_cfg["params"].pop("z_loss_weight", 0.0)
+        self.load_balance_loss_weight = self.model_cfg["params"].pop("load_balance_loss_weight", 1e-5)
+        self.z_loss_weight = self.model_cfg["params"].pop("z_loss_weight", 1e-5)
         self.num_windows = self.model_cfg["params"].pop("num_windows", 3)
 
         if self.checkpoint_path is not None:
@@ -290,6 +295,7 @@ class ConditionedForecastModule(ForecastModule):
         batch.pin_memory()
         return batch.to(device, non_blocking=True)
 
+    """
     def get_noise_scale(self):
         # During learning rate warmup, no noise is added.
         if self.global_step < self.scheduler_cfg["params"]["warmup"]:
@@ -301,6 +307,19 @@ class ConditionedForecastModule(ForecastModule):
             return random.uniform(0, max_scale_at_step)
         else:
             return random.uniform(0, max_noise_scale)
+    """
+
+    def get_noise_scale(self):
+        # During learning rate warmup, no noise is added.
+        if self.global_step < self.scheduler_cfg["params"]["warmup"]:
+            return 0.0
+        max_noise_scale = self.scheduler_cfg["params"].get("max_noise_scale", 1.0)
+        # ramp up noise scale early in training
+        if self.global_step < 10000:
+            max_scale_at_step = max_noise_scale * (self.global_step / (self.t_max // 2))
+            return abs(random.gauss(0, max_scale_at_step))
+        else:
+            return abs(random.gauss(0, max_noise_scale))
 
     def training_step(
         self,
@@ -396,6 +415,12 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             scheduler_cfg=scheduler_cfg,
             log_wandb=log_wandb,
         )
+        
+        self.augmentations = [
+            LogUniformNoise(0.001, 0.3, skip_prob=0.1),
+            FieldDropout(),
+            FrameDropout()
+        ]
 
     def moe_metrics(self, moe_outputs, log_dict: dict, prefix: str) -> dict:
         for moe_idx, moe_output in enumerate(moe_outputs):
@@ -438,7 +463,8 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
     ) -> torch.Tensor:
     
         with torch.no_grad():
-            batch.noise_(self.get_noise_scale())
+            for aug in self.augmentations:
+                batch.input = aug(batch.input)
             
         inp = batch.get_input()
         torch.compiler.cudagraph_mark_step_begin()

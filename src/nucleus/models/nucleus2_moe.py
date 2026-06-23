@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.profiler import record_function
 from rotary_embedding_torch import RotaryEmbedding
+from typing import Literal
 
 from nucleus.layers.adaptive_layernorm import AdaptiveLayerNorm
 from nucleus.layers.attention import NeighborhoodAttention
@@ -12,6 +13,8 @@ from nucleus.layers.droppath import DropPath
 from nucleus.layers import (
     AdaptiveEmbed,
     AdaptiveDebed,
+    LinearEmbed,
+    LinearDebed
 )
 from nucleus.data.batching import CollatedBatch
 from nucleus.utils.sdf_reinit import sdf_reinit_sussman
@@ -29,6 +32,9 @@ _DTYPE_TO_STR: dict[torch.dtype, str] = {
 _STR_TO_DTYPE: dict[str, torch.dtype] = {v: k for k, v in _DTYPE_TO_STR.items()}
 
 
+NUCLEUS_DTYPE = Literal["float32", "float16", "bfloat16"]
+
+
 @dataclass
 class Nucleus2MoEConfig:
     patch_size: int
@@ -38,18 +44,20 @@ class Nucleus2MoEConfig:
     num_experts: int
     topk: int
     moe_intermediate_dim: int
-    embed_dtype: torch.dtype = torch.bfloat16
-    debed_dtype: torch.dtype = torch.bfloat16
-    activation_dtype: torch.dtype = torch.bfloat16
-    attention_dtype: torch.dtype = torch.bfloat16
-    moe_dtype: torch.dtype = torch.bfloat16
+    patching: Literal["Linear", "Adaptive"]
+    embed_dtype: NUCLEUS_DTYPE = "float32"
+    debed_dtype: NUCLEUS_DTYPE = "float32"
+    activation_dtype: NUCLEUS_DTYPE = "float32"
+    attention_dtype: NUCLEUS_DTYPE = "bfloat16"
+    moe_dtype: NUCLEUS_DTYPE = "bfloat16"
 
 
 def _config_to_dict(config: Nucleus2MoEConfig) -> dict:
     d = dataclasses.asdict(config)
     dtype_fields = {"embed_dtype", "debed_dtype", "activation_dtype", "attention_dtype", "moe_dtype"}
     for key in dtype_fields:
-        d[key] = _DTYPE_TO_STR[d[key]]
+        if not isinstance(d[key], str):
+            d[key] = _DTYPE_TO_STR[d[key]]
     return d
 
 
@@ -61,19 +69,24 @@ def _config_from_dict(d: dict) -> Nucleus2MoEConfig:
             d[key] = _STR_TO_DTYPE[d[key]]
     return Nucleus2MoEConfig(**d)
 
+def get_dtype(dtype):
+    if isinstance(dtype, str):
+        return _STR_TO_DTYPE[dtype]
+    return dtype
+
 
 class TransformerMoEBlock(nn.Module):
     def __init__(self, config: Nucleus2MoEConfig, num_sim_params: int, drop_path_prob: float):
         super().__init__()
 
-        self.activation_dtype = config.activation_dtype
-        self.attention_dtype = config.attention_dtype
-        self.moe_dtype = config.moe_dtype
+        self.activation_dtype = get_dtype(config.activation_dtype)
+        self.attention_dtype = get_dtype(config.attention_dtype)
+        self.moe_dtype = get_dtype(config.moe_dtype)
 
         self.drop_path = DropPath(drop_path_prob)
 
-        self.attention_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, dtype=config.attention_dtype)
-        self.mlp_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, config.attention_dtype)
+        self.attention_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, dtype=self.attention_dtype)
+        self.mlp_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, self.moe_dtype)
 
         self.router = TopkRouterWithBias(
             config.num_experts,
@@ -133,16 +146,10 @@ class MoEBase(nn.Module):
     def __init__(self, config: Nucleus2MoEConfig):
         super().__init__()
         self.config = config
-        self.embed_dtype = config.embed_dtype
         n_fields = len(self.expected_fields)
 
-        """
-        self.embed = LinearEmbed(
-            patch_size=config.patch_size,
-            in_channels=n_fields,
-            embed_dim=config.embed_dim,
-            dtype=config.embed_dtype
-        )"""
+        self.embed_dtype = get_dtype(config.embed_dtype)
+        self.debed_dtype = get_dtype(config.debed_dtype)
 
         self.rotary_emb = RotaryEmbedding(
             dim=(config.embed_dim // config.num_heads) // 3,
@@ -161,25 +168,35 @@ class MoEBase(nn.Module):
             for idx in range(config.processor_blocks)
         ])
 
-        self.out_norm = nn.RMSNorm(config.embed_dim, dtype=config.debed_dtype)
-        """
-        self.debed = LinearDebed(
-            patch_size=config.patch_size,
-            embed_dim=config.embed_dim,
-            out_channels=n_fields,
-            dtype=config.debed_dtype
-        )
-        """
+        self.out_norm = nn.RMSNorm(config.embed_dim, dtype=self.debed_dtype)
         
-        self.embed = AdaptiveEmbed(
-            in_channels=n_fields,
-            out_channels=config.embed_dim,
-            out_shape=(16, 16),
-        )
-        self.debed = AdaptiveDebed(
-            in_channels=config.embed_dim,
-            out_channels=n_fields
-        )
+        assert config.patching in ("Linear", "Adaptive")
+        if config.patching == "Linear":    
+            self.embed = LinearEmbed(
+                patch_size=config.patch_size,
+                in_channels=n_fields,
+                embed_dim=config.embed_dim,
+                dtype=self.embed_dtype
+            )
+            self.debed = LinearDebed(
+                patch_size=config.patch_size,
+                embed_dim=config.embed_dim,
+                out_channels=n_fields,
+                dtype=self.debed_dtype
+            )
+        else:          
+            self.embed = AdaptiveEmbed(
+                in_channels=n_fields,
+                out_channels=config.embed_dim,
+                out_shape=(16, 16),
+                dtype=config.embed_dtype
+            )
+            self.debed = AdaptiveDebed(
+                in_channels=config.embed_dim,
+                out_channels=n_fields,
+                patch_shape=(16, 16),
+                dtype=config.debed_dtype
+            )
 
     def get_extra_state(self):
         return {"model_name": getattr(self, "_model_name", None), "config": _config_to_dict(self.config)}
@@ -199,10 +216,12 @@ class MoEBase(nn.Module):
         assert input.dtype == torch.float32
         assert sim_params.dtype == torch.float32
         
-        _, _, h, w, _ = x.shape
+        _, _, h, w, _ = input.shape
 
         with record_function("encode"):
-            x = embed = self.embed(input.to(self.config.embed_dtype))
+            x = embed = self.embed(input.to(self.embed_dtype))
+            
+        x = x.to(get_dtype(self.config.activation_dtype))
 
         with record_function("get_axial_freqs"):
             with torch.no_grad():
@@ -215,11 +234,8 @@ class MoEBase(nn.Module):
                 x, moe_output = blk(x, rotary_freqs, sim_params)
                 moe_outputs.append(moe_output)
 
-        x = x + embed
-
         with record_function("debed"):
-            x = x.to(self.config.debed_dtype)
-            x = self.out_norm(x)
+            x = self.out_norm(x.to(self.debed_dtype) + embed.to(self.debed_dtype)) 
             x = self.debed(x, target_shape=(h, w))
 
         return x.to(torch.float32), moe_outputs
@@ -260,6 +276,6 @@ class MoEBase(nn.Module):
 
 
 @register_model("nucleus2_moe")
-@torch.compile(fullgraph=True)
+@torch.compile(fullgraph=True)#, mode="reduce-overhead")
 class Nucleus2MoE(MoEBase):
     pass

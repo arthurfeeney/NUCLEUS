@@ -132,11 +132,7 @@ def main(cfg: DictConfig) -> None:
         entity="hpcforge"
     )
     
-    # If log_dir is not set, write to a temporary directory    
-    tmp_dir = os.environ["TMPDIR"]
-    if cfg.log_dir is None and tmp_dir is not None:
-        cfg.log_dir = tmp_dir
-    assert cfg.log_dir is not None, "log_dir should be set in hydra config or the env variable $TMPDIR should be set"
+    assert cfg.log_dir is not None, "Must set `log_dir` in hydra config"
     print(f"logging to {cfg.log_dir}")
 
     # Setup Wandb Logger.
@@ -221,14 +217,12 @@ def main(cfg: DictConfig) -> None:
         )
         train_dataset = dataset_cls(
             filenames=cfg.data_cfg.train_paths,
-            cache_dir=None,#os.environ["TMPDIR"],
             augment=True,
             **shared_dataset_kwargs,
             **hdf5_kwargs,
         )
         val_dataset = dataset_cls(
             filenames=cfg.data_cfg.val_paths,
-            cache_dir=None, #os.environ["TMPDIR"],
             augment=False,
             **shared_dataset_kwargs,
             **hdf5_kwargs,
@@ -238,7 +232,7 @@ def main(cfg: DictConfig) -> None:
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=not use_webdataset,
-        num_workers=16,
+        num_workers=8,
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=not use_webdataset,
@@ -280,7 +274,8 @@ def main(cfg: DictConfig) -> None:
             mode="min",
             save_top_k=2,
             save_last=True,
-            every_n_train_steps=20000,
+            #every_n_train_steps=20000,
+            every_n_epochs=1,
             save_on_exception=True
         ),
         progress_bar,
@@ -298,6 +293,7 @@ def main(cfg: DictConfig) -> None:
         max_epochs=cfg.max_epochs,
         max_steps=cfg.max_steps,
         val_check_interval=cfg.val_check_interval,
+        check_val_every_n_epoch=cfg.check_val_every_n_epoch,
         log_every_n_steps=100,
         accumulate_grad_batches=cfg.accumulate_grad_batches,
         logger=logger,

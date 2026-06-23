@@ -20,18 +20,19 @@ def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int)
         vely = torch.from_numpy(handle["vely"][:])
         gt_trajectory = torch.stack((sdf, temp, velx, vely), dim=-1)
 
-    initial_state: torch.Tensor = gt_trajectory[:cfg.history_time_window][None, :]
+    initial_state: torch.Tensor = gt_trajectory[cfg.start_time : cfg.start_time + cfg.history_time_window][None, :]
     json_path = test_file_path.replace(".hdf5", ".json")
     with open(json_path, "r") as handle:
         sim_params_dict: dict = json.load(handle)
-    sim_params_tensor = torch.Tensor(
-        [sim_params_dict[param] for param in model.expected_fluid_params] +
-        [sim_params_dict["heater"][param] for param in model.expected_heater_params] +
-        [sim_params_dict[param] for param in model.expected_global_params],
+
+    normalized_initial_state = normalizer.normalize(initial_state, bulk_temp=sim_params_dict["bulk_temp"]).to("cuda")
+    normalized_sim_params_dict = normalizer.normalize_params([sim_params_dict])[0]
+    normalized_sim_params_tensor = torch.tensor(
+        [normalized_sim_params_dict[param] for param in model.expected_fluid_params] +
+        [normalized_sim_params_dict["heater"][param] for param in model.expected_heater_params] +
+        [normalized_sim_params_dict[param] for param in model.expected_global_params],
+        device="cuda"
     )[None, :]
-    
-    normalized_initial_state = normalizer.normalize(initial_state, bulk_temp=sim_params_dict["bulk_temp"])
-    normalized_sim_params_tensor = normalizer.normalize_params(sim_params_tensor)
 
     with torch.inference_mode():
         normalized_pred_trajectory: torch.Tensor = model.forward_trajectory(
@@ -54,6 +55,6 @@ def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int)
     return TestResults(
         case_name,
         pred_trajectory, 
-        gt_trajectory,
+        gt_trajectory[cfg.start_time : cfg.start_time + trajectory_steps],
         sim_params=sim_params_dict
     )

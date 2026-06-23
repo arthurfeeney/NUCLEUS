@@ -41,6 +41,7 @@ def main(cfg: DictConfig):
     for test_file_path in cfg.data_cfg.test_paths:
         test_results: TestResults = run_test(cfg, model, normalizer, test_file_path, trajectory_steps=cfg.trajectory_steps)    
         rollout_save_root = save_root / test_results.case_name
+        rollout_save_root.mkdir(parents=True, exist_ok=True)
         model_save_path = rollout_save_root / "model_cfg.json"
         with open(model_save_path, "w") as handle:
             OmegaConf.save(config=cfg.model_cfg, f=handle.name)

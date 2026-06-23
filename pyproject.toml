@@ -31,7 +31,7 @@ dependencies = [
     "rotary-embedding-torch>=0.8.9",
     "imgcat>=0.6.0",
     "python-dotenv>=1.2.2,<2",
-    "webdataset"
+    "webdataset",
 ]
 
 [dependency-groups]
