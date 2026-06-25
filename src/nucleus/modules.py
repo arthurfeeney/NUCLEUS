@@ -287,27 +287,8 @@ class ConditionedForecastModule(ForecastModule):
             self.log("train/grad_norm", grad_norm, on_step=True, on_epoch=False)
 
     def transfer_batch_to_device(self, batch: CollatedBatch, device: torch.device, dataloader_idx: int):
-        r"""
-        CollatedBatch is a dataclass so Lightning cannot auto-pin or transfer it.
-        pin_memory() is already called by the DataLoader workers (via the hasattr check
-        in torch's pin_memory utility), so we only need the async H2D transfer here.
-        """
-        batch.pin_memory()
+        batch = batch.pin_memory()
         return batch.to(device, non_blocking=True)
-
-    """
-    def get_noise_scale(self):
-        # During learning rate warmup, no noise is added.
-        if self.global_step < self.scheduler_cfg["params"]["warmup"]:
-            return 0.0
-        max_noise_scale = self.scheduler_cfg["params"].get("max_noise_scale", 1.0)
-        # ramp up noise scale in first half of training.
-        if self.global_step < self.t_max // 2:
-            max_scale_at_step = max_noise_scale * (self.global_step / (self.t_max // 2))
-            return random.uniform(0, max_scale_at_step)
-        else:
-            return random.uniform(0, max_noise_scale)
-    """
 
     def get_noise_scale(self):
         # During learning rate warmup, no noise is added.
