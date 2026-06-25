@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from nucleus.data.web_forecast_dataset import WebForecastDataset
+from nucleus.data.forecast_webdataset import forecast_web_dataset
 from nucleus.data.batching import collate
 
 FIELDS = ["dfun", "temperature", "velx", "vely"]
@@ -81,9 +81,11 @@ def shard_path():
         yield write_dummy_shard(tmpdir, num_chunks=4)
 
 
-def make_dataset(shard_path: str, augment: bool = False) -> WebForecastDataset:
-    return WebForecastDataset(
+def make_dataset(shard_path: str, augment: bool = False) -> wds.WebDataset:
+    return forecast_web_dataset(
         shard_urls=[shard_path],
+        cache_dir=None,
+        cache_size=-1,
         history_time_window=HISTORY,
         future_time_window=FUTURE,
         fluid_params=["inv_reynolds", "cpgas", "mugas", "rhogas", "thcogas", "stefan", "prandtl", "gravy", "bulk_temp"],
@@ -120,9 +122,8 @@ def test_output_dtype_is_float32(shard_path):
 def test_sim_params_tensor_shape(shard_path):
     sample = next(iter(make_dataset(shard_path)))
     # fluid(9) + heater(3) + global(1) = 13
-    assert sample.fluid_params_tensor is not None
-    # TODO: re-enable once merged with inference refactoring.
-    #assert sample.fluid_params_tensor.shape == (13,)
+    assert sample.sim_params_tensor is not None
+    assert sample.sim_params_tensor.shape == (13,)
 
 
 def test_dataloader_batching(shard_path):

@@ -1,6 +1,7 @@
-log_dir:
-checkpoint_path:
+log_dir: # directory to write logs, model checkpoints, profiles,
+checkpoint_path: # path to resume training
 commit_sha:
+profile: # use pytorch profiler
 
 seed: 42
 
@@ -8,8 +9,9 @@ nodes: 1
 devices: 1
 
 max_epochs:
-max_steps: 100000
-val_check_interval: 100
+max_steps: 200000
+val_check_interval:
+check_val_every_n_epoch: 1
 batch_size: 16
 accumulate_grad_batches: 1
 

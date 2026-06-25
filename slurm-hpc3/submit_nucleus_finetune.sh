@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH -A amowli_lab_gpu
-#SBATCH -p free-gpu32
-#SBATCH --job-name=train-nucleus-exp
+#SBATCH -p free-gpu
+#SBATCH --job-name=finetune-nucleus
 #SBATCH -o slurm-%x-%j.out
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:RTX6000:1
+#SBATCH --gres=gpu:A30:1
 #SBATCH --time=12:59:00
 
 uv venv $TMPDIR/NUCLEUS
@@ -19,20 +19,18 @@ export PYTHONPYCACHE_DIR=$TMPDIR/pycache/
 uv sync --no-cache --active --extra cu130
 uv pip install -e .
 
+CKPT_PATH=/pub/afeeney/nucleus_logs/nucleus2_moe_poolboiling64_2026-06-22_53641953/checkpoints/last.ckpt
+
 python scripts/train.py \
+    max_steps=10000 \
     model_cfg=nucleus2/nucleus2_experiment \
-    model_cfg.params.processor_blocks=8 \
-    model_cfg.params.embed_dim=768 \
-    model_cfg.params.num_experts=6 \
-    model_cfg.params.moe_intermediate_dim=2048 \
-    model_cfg.params.patching="Linear" \
-    model_cfg.params.activation_dtype="float32" \
+    checkpoint_path=$CKPT_PATH \
     data_cfg=poolboiling64 \
     normalizer_cfg=standard \
-    batch_size=64 \
+    batch_size=4 \
     optim_cfg.params.lr=1e-3 \
     optim_cfg.params.weight_decay=1e-2 \
-    scheduler_cfg=trapezoidal \
-    scheduler_cfg.params.warmup=1000 \
-    scheduler_cfg.params.cooldown=5000 \
+    scheduler_cfg=cosine_warmup \
+    scheduler_cfg.params.warmup=20 \
+    scheduler_cfg.params.eta_min=1e-6 \
     log_dir=/pub/afeeney/nucleus_logs

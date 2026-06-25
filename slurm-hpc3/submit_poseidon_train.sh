@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH -A amowli_lab_gpu
-#SBATCH -p free-gpu
+#SBATCH -p free-gpu32
 #SBATCH --job-name=train-poseidon
 #SBATCH -o slurm-%x-%j.out
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
-#SBATCH --gres=gpu:A30:1
+#SBATCH --gres=gpu:RTX6000:1
 #SBATCH --time=12:59:00
 
 uv venv $TMPDIR/NUCLEUS

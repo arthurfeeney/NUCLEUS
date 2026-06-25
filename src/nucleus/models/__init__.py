@@ -1,7 +1,6 @@
-from .vit import ViT, AxialViT, NeighborViT
-from .moe import NeighborMoE
-from .nucleus1_moe import Nucleus1ViTMoE, Nucleus1AxialMoE, Nucleus1NeighborMoE
-from .nucleus1_vit import Nucleus1ViT, Nucleus1AxialViT, Nucleus1NeighborViT
+from .nucleus1_moe import Nucleus1ViTMoE, Nucleus1AxialMoE, Nucleus1NeighborMoE, Nucleus1MoEConfig
+from .nucleus1_vit import Nucleus1ViT, Nucleus1AxialViT, Nucleus1NeighborViT, Nucleus1ViTConfig
+from .nucleus2_moe import Nucleus2MoE, Nucleus2MoEConfig
 from .unets import ModernUnet, ClassicUnet
 from .bubbleformer_vit import BubbleformerViT, BubbleformerFilmViT
 from nucleus.baseline.moe_dpot import MoEPOTNet as MoEPOTNetModule
@@ -10,7 +9,8 @@ from ._api import (
     register_model,
     list_models,
     get_model,
-    get_model_class
+    get_model_class,
+    load_model_from_checkpoint,
 )
 
 # This is just a stupid wrapper to register the model and initialize with a dictionary.
