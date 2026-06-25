@@ -24,14 +24,16 @@ def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int)
     json_path = test_file_path.replace(".hdf5", ".json")
     with open(json_path, "r") as handle:
         sim_params_dict: dict = json.load(handle)
+        
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    normalized_initial_state = normalizer.normalize(initial_state, bulk_temp=sim_params_dict["bulk_temp"]).to("cuda")
+    normalized_initial_state = normalizer.normalize(initial_state, bulk_temp=sim_params_dict["bulk_temp"]).to(device)
     normalized_sim_params_dict = normalizer.normalize_params([sim_params_dict])[0]
     normalized_sim_params_tensor = torch.tensor(
         [normalized_sim_params_dict[param] for param in model.expected_fluid_params] +
         [normalized_sim_params_dict["heater"][param] for param in model.expected_heater_params] +
         [normalized_sim_params_dict[param] for param in model.expected_global_params],
-        device="cuda"
+        device=device
     )[None, :]
 
     with torch.inference_mode():
