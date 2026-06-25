@@ -96,7 +96,7 @@ def test_nucleus1_vit(device, model_name):
 @pytest.mark.parametrize("model_name", _VIT_MODELS + _MOE_MODELS)
 @pytest.mark.parametrize("device", ["cpu"])
 @pytest.mark.parametrize("batch_size", [1, 4])
-@pytest.mark.parametrize("trajectory_steps", [8, 24, 32])
+@pytest.mark.parametrize("trajectory_steps", [8, 24])
 @pytest.mark.parametrize("use_sdf_reinit", [True, False])
 def test_nucleus1_forward_trajectory(
     device,

@@ -65,7 +65,7 @@ def _config_from_dict(d: dict) -> Nucleus2MoEConfig:
     d = dict(d)
     dtype_fields = {"embed_dtype", "debed_dtype", "activation_dtype", "attention_dtype", "moe_dtype"}
     for key in dtype_fields:
-        if key in d:
+        if not isinstance(d[key], torch.dtype):
             d[key] = _STR_TO_DTYPE[d[key]]
     return Nucleus2MoEConfig(**d)
 

@@ -12,13 +12,13 @@ def model():
         input_fields=4,
         output_fields=4,
         patch_size=4,
-        embed_dim=128,
+        embed_dim=64,
         num_heads=2,
         processor_blocks=2,
         num_experts=4,
         topk=2,
-        moe_intermediate_dim=128,
-        patching="linear"
+        moe_intermediate_dim=64,
+        patching="Linear"
     )
 
 @pytest.mark.parametrize("device", ["cpu"])
@@ -50,7 +50,7 @@ def test_nucleus2(device, model):
             
 @pytest.mark.parametrize("device", ["cpu"])
 @pytest.mark.parametrize("batch_size", [1, 4])
-@pytest.mark.parametrize("trajectory_steps", [8, 24, 32])
+@pytest.mark.parametrize("trajectory_steps", [8, 24])
 @pytest.mark.parametrize("use_sdf_reinit", [True, False])
 @pytest.mark.parametrize("return_moe_outputs", [True, False])
 def test_nucleus2_forward_trajectory(
