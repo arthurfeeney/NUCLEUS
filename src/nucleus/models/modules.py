@@ -382,7 +382,7 @@ class PhaseForecastModule(MoEConditionedForecastModule):
         with torch.no_grad():
             for aug in self.augmentations:
                 fields = aug(fields)
-        pred_fields, pred_phase_logits, moe_outputs = self.model(fields, phase, batch.sim_params_tensor)
+        pred_fields, pred_phase_logits, moe_outputs = self.model.step(fields, phase, batch.sim_params_tensor)
         target_fields, target_phase = self._sdf_to_phase(batch.target)
         
         field_loss = self.criterion(pred_fields, target_fields)
@@ -411,7 +411,7 @@ class PhaseForecastModule(MoEConditionedForecastModule):
     
     def validation_step(self, batch: CollatedBatch, batch_idx: int) -> torch.Tensor:
         fields, phase = self._sdf_to_phase(batch.input)
-        pred_fields, pred_phase_logits, moe_outputs = self.model(fields, phase, batch.sim_params_tensor)
+        pred_fields, pred_phase_logits, moe_outputs = self.model.step(fields, phase, batch.sim_params_tensor)
         target_fields, target_phase = self._sdf_to_phase(batch.target)
         
         field_loss = self.criterion(pred_fields, target_fields)
