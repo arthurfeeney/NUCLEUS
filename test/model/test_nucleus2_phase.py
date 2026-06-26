@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from nucleus.models.nucleus2_moe import Nucleus2MoEConfig
-from nucleus.models.nucleus2_moe_phase import Nucleus2Phase
+from nucleus.models.nucleus2_moe_phase import Nucleus2MoEPhase
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def config():
 
 @pytest.fixture
 def model(config):
-    return Nucleus2Phase(config)
+    return Nucleus2MoEPhase(config)
 
 
 @pytest.mark.parametrize("device", ["cpu"])

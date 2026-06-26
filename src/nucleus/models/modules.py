@@ -13,7 +13,13 @@ from nucleus.data.batching import CollatedBatch
 from nucleus.models import get_model, load_model_from_checkpoint
 from nucleus.utils.lr_schedulers import CosineWarmupLR, TrapezoidalLR
 from nucleus.layers.moe.topk_moe import TopkRouterWithBias
-from nucleus.utils.physical_metrics import eikonal, liquid_divergence
+from nucleus.utils.losses import phase_bce_with_logits_loss
+from nucleus.utils.metrics import precision_recall
+from nucleus.utils.physical_metrics import (
+    eikonal,
+    liquid_divergence,
+    nucleation_event_masks,
+)
 from nucleus.noise import (
     LogUniformNoise,
     FieldDropout,
@@ -372,6 +378,24 @@ class PhaseForecastModule(MoEConditionedForecastModule):
         phase = (sdf > 0).to(torch.int32)
         fields = tensor[..., 1:]
         return fields, phase
+    
+    def _phase_precision_recall(self, input_phase, target_phase, pred_phase_logits, prefix):
+        pred_phase = (pred_phase_logits > 0).to(torch.int32)
+        # The frame preceding each target frame: the last input frame, followed
+        # by the earlier target frames. Used as the liquid reference for both the
+        # ground truth and the prediction so nucleation recall is measured over
+        # the cells that were actually liquid beforehand.
+        prev_phase = torch.cat((input_phase[:, -1:], target_phase[:, :-1]), dim=1)
+        gt_nucleation, pred_nucleation = nucleation_event_masks(prev_phase, target_phase, pred_phase)
+
+        nucleation_precision, nucleation_recall = precision_recall(pred_nucleation, gt_nucleation)
+        vapor_precision, vapor_recall = precision_recall(pred_phase, target_phase)
+        return {
+            f"{prefix}/nucleation_precision": nucleation_precision,
+            f"{prefix}/nucleation_recall": nucleation_recall,
+            f"{prefix}/vapor_precision": vapor_precision,
+            f"{prefix}/vapor_recall": vapor_recall,
+        }
         
     def forward(self, batch: CollatedBatch):
         fields, phase = self._sdf_to_phase(batch.input)
@@ -386,15 +410,11 @@ class PhaseForecastModule(MoEConditionedForecastModule):
         target_fields, target_phase = self._sdf_to_phase(batch.target)
         
         field_loss = self.criterion(pred_fields, target_fields)
-        phase_loss = torch.nn.functional.binary_cross_entropy_with_logits(
-            pred_phase_logits, target_phase.to(torch.float32)
-        )
-
+        phase_loss = phase_bce_with_logits_loss(phase, target_phase, pred_phase_logits, 2.0, 20.0)
         data_loss = field_loss + phase_loss
         
         aux_loss, router_has_loss = self._router_loss(moe_outputs)
         loss = data_loss + aux_loss
-    
         self._update_router_bias(moe_outputs)
 
         log_dict = {
@@ -405,23 +425,22 @@ class PhaseForecastModule(MoEConditionedForecastModule):
             "train/step": self.global_step,
             "train/learning_rate": self.get_current_lr(),
         }
+        log_dict |= self._phase_precision_recall(phase, target_phase, pred_phase_logits, "train")
         log_dict = self._moe_metrics(moe_outputs, log_dict, "train")
         self.default_log_dict(log_dict)
         return loss
-    
+
     def validation_step(self, batch: CollatedBatch, batch_idx: int) -> torch.Tensor:
         fields, phase = self._sdf_to_phase(batch.input)
         pred_fields, pred_phase_logits, moe_outputs = self.model.step(fields, phase, batch.sim_params_tensor)
         target_fields, target_phase = self._sdf_to_phase(batch.target)
-        
-        field_loss = self.criterion(pred_fields, target_fields)
-        phase_loss = torch.nn.functional.binary_cross_entropy_with_logits(
-            pred_phase_logits, target_phase.to(torch.float32)
-        )
 
+        field_loss = self.criterion(pred_fields, target_fields)
+        phase_loss = phase_bce_with_logits_loss(phase, target_phase, pred_phase_logits, 2.0, 20.0)
         loss = field_loss + phase_loss
 
         log_dict = { "val/loss": loss, "val/field_loss": field_loss, "val/phase_loss": phase_loss }
+        log_dict |= self._phase_precision_recall(phase, target_phase, pred_phase_logits, "val")
         log_dict = self._moe_metrics(moe_outputs, log_dict, "val")
         self.default_log_dict(log_dict)
         return loss

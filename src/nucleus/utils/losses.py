@@ -137,3 +137,28 @@ class L1RelativeLoss(nn.Module):
         
         # Add each loss and take mean over batch dimensions.
         return (sdf_loss + temp_loss + velx_loss + vely_loss).mean()
+    
+def phase_bce_with_logits_loss(
+    input_phase, 
+    target_phase, 
+    pred_phase_logits, 
+    nucleation_weight,
+    vapor_weight
+):
+    # use higher weight for cells that should have phase change
+    # I.e., nucleation or bubble movement.
+    all_phase = torch.cat((input_phase, target_phase), dim=1)
+    next_phase = all_phase[:, 1:] 
+    prev_phase = all_phase[:, :-1]
+    phase_change_mask = (next_phase != prev_phase)[:, -target_phase.shape[1]:]
+    phase_change_weight = torch.where(phase_change_mask, nucleation_weight, 1.0)
+    
+    # vapor is only ~5% of the domain, so it should be up weighted
+    pos_weight = torch.tensor(vapor_weight, device=target_phase.device)
+    
+    return torch.nn.functional.binary_cross_entropy_with_logits(
+        pred_phase_logits, 
+        target_phase.to(torch.float32), 
+        weight=phase_change_weight,
+        pos_weight=pos_weight
+    )

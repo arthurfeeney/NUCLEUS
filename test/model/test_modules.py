@@ -20,7 +20,7 @@ def test_phase_forecast_module():
         log_wandb=False,
         normalization_constants=None
     )
-    module.default_log_dict = lambda *args, **kwargs: None
+    module.default_log_dict = lambda *args, **kwargs: None # force no logging
     
     device = "cpu"
     batch = CollatedBatch(

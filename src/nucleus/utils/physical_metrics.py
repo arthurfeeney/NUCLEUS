@@ -141,8 +141,26 @@ def liquid_divergence(velx, vely, sdf, dx, dy):
     (velx_grad_x,) = torch.gradient(velx, spacing=dx, dim=-1)
     (vely_grad_y,) = torch.gradient(vely, spacing=dy, dim=-2)
     velx_liquid_grad_x = velx_grad_x * (sdf < EPSILON)
-    vely_liquid_grad_y = vely_grad_y * (sdf < EPSILON)    
+    vely_liquid_grad_y = vely_grad_y * (sdf < EPSILON)
     return (velx_liquid_grad_x + vely_liquid_grad_y).mean(dim=(-2, -1))
+
+def nucleation_event_masks(prev_phase, target_phase, pred_phase):
+    r"""
+    Identifies nucleation events: cells that are liquid in the previous frame and
+    become vapor. The previous frame is used as the reference for both the ground
+    truth and prediction so that precision and recall measure, over the set of
+    cells that were truly liquid, which ones are predicted to nucleate.
+    Args:
+        prev_phase: phase of the frame before each target frame. 0 - liquid, nonzero - vapor.
+        target_phase: ground truth phase. 0 - liquid, nonzero - vapor.
+        pred_phase: predicted phase. 0 - liquid, nonzero - vapor.
+    Returns:
+        (ground_truth_nucleation, predicted_nucleation) boolean masks.
+    """
+    liquid_before = prev_phase == 0
+    ground_truth_nucleation = liquid_before & (target_phase != 0)
+    predicted_nucleation = liquid_before & (pred_phase != 0)
+    return ground_truth_nucleation, predicted_nucleation
 
 def interface_mask(sdf):
     assert sdf.dim() == 4, "SDF must be of shape (B, T, H, W)"

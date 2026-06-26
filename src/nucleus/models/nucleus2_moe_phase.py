@@ -70,7 +70,7 @@ class Nucleus2MoEPhase(Nucleus2MoE):
         with record_function("patch embed"):
             pe = self.phase_embed(phase)
             phase_patches = self.phase_patcher(pe)
-            
+
         field_patches = field_patches.to(get_dtype(self.config.activation_dtype))
         phase_patches = phase_patches.to(get_dtype(self.config.activation_dtype))
         x = field_patches + phase_patches
@@ -90,6 +90,10 @@ class Nucleus2MoEPhase(Nucleus2MoE):
             x = self.out_norm(x.to(self.debed_dtype) + field_patches.to(self.debed_dtype) + phase_patches.to(self.debed_dtype)) 
             fields = self.debed(x, target_shape=(h, w))
             phase_logits = self.phase_unpatcher(x, target_shape=(h, w)).squeeze(-1)
+            
+        #temp, velx, vely = fields.unbind(dim=-1)
+        # TODO: clip temp based on saturation temp (need to pass to step...)
+        # TODO: predict stream function???
 
         return fields, phase_logits, moe_outputs
 
@@ -109,24 +113,32 @@ class Nucleus2MoEPhase(Nucleus2MoE):
         assert initial_state.shape[0] == sim_params.shape[0]
         assert input_time_window_size == initial_state.shape[1]
 
-        trajectory = initial_state.clone()
+        trajectory_with_sdf = initial_state.clone()
+        sdf = trajectory_with_sdf[..., 0]
+        phase = (sdf > 0).to(torch.int32)
+        fields = trajectory_with_sdf[..., 1:]
+        
         trajectory_moe_outputs = [] if return_moe_outputs else None
 
         for _ in range(input_time_window_size, trajectory_steps, output_time_window_size):
-            inp = trajectory[:, -input_time_window_size:]
-            phase = inp[..., 0].to(torch.int32)
-            fields = inp[..., 1:]
-            pred_fields, pred_phase_logits, moe_outputs = self.step(fields, phase, sim_params)
+            input_fields = fields[:, -input_time_window_size:]
+            input_phase = phase[:, -input_time_window_size:]
+            pred_fields, pred_phase_logits, moe_outputs = self.step(input_fields, input_phase, sim_params)
             
-            # convert logits to 0/1 floats to pass to next step
-            pred_phase_mask = (pred_phase_logits > 0).to(torch.float32)[..., None]    
-            pred = torch.cat((pred_phase_mask, pred_fields), dim=-1)
-            
-            output_time_window = pred[:, -output_time_window_size:]
+            pred_phase = (pred_phase_logits > 0).to(torch.int32)        
+    
+            output_fields = pred_fields[:, -output_time_window_size:]
+            output_phase = pred_phase[:, -output_time_window_size:]
 
-            trajectory = torch.cat((trajectory, output_time_window), dim=1)
+            fields = torch.cat((fields, output_fields), dim=1)
+            phase = torch.cat((phase, output_phase), dim=1)
             if return_moe_outputs:
                 trajectory_moe_outputs.append(moe_outputs)
+
+        trajectory = torch.cat((
+            phase[..., None].to(torch.float32),
+            fields
+        ), dim=-1)
 
         if return_moe_outputs:
             return trajectory, trajectory_moe_outputs

@@ -195,6 +195,18 @@ class StandardNormalizer(Normalizer):
             bt = bulk_temp
         return temp * self.constants.temp_std + self.constants.temp_mean + bt
     
+class PhaseNormalizer(StandardNormalizer):
+    r"""
+    This is the same as the StandardNormalizer, but does NOT normalize the SDF. This is intended
+    to be used with models that process a phase mask rather than the SDF. Not normalizing the SDF
+    makes it easy to convert to a phase mask, since we can just do `phase_mask = sdf > 0`. If the
+    """
+    def normalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
+        return sdf
+    
+    def unnormalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
+        return sdf 
+       
 class NoNormalizer(Normalizer):
     def __init__(self):
         super().__init__(None)
@@ -212,22 +224,24 @@ class NoNormalizer(Normalizer):
         return sim_params_dicts
     
 def get_normalizer(normalizer_cfg: dict) -> Normalizer:
+    constants = NormalizerConstants(
+        max_domain_size=normalizer_cfg["max_domain_size"],
+        sdf_mean=normalizer_cfg["sdf_mean"],
+        sdf_std=normalizer_cfg["sdf_std"],
+        absmax_temp=normalizer_cfg["absmax_temp"],
+        temp_mean=normalizer_cfg["temp_mean"],
+        temp_std=normalizer_cfg["temp_std"],
+        velx_mean=normalizer_cfg["velx_mean"],
+        velx_std=normalizer_cfg["velx_std"],
+        vely_mean=normalizer_cfg["vely_mean"],
+        vely_std=normalizer_cfg["vely_std"],
+        numeric_sim_params_min=normalizer_cfg["sim_params_min"],
+        numeric_sim_params_max=normalizer_cfg["sim_params_max"],
+    )
     if normalizer_cfg["name"] == "standard":
-        constants = NormalizerConstants(
-            max_domain_size=normalizer_cfg["max_domain_size"],
-            sdf_mean=normalizer_cfg["sdf_mean"],
-            sdf_std=normalizer_cfg["sdf_std"],
-            absmax_temp=normalizer_cfg["absmax_temp"],
-            temp_mean=normalizer_cfg["temp_mean"],
-            temp_std=normalizer_cfg["temp_std"],
-            velx_mean=normalizer_cfg["velx_mean"],
-            velx_std=normalizer_cfg["velx_std"],
-            vely_mean=normalizer_cfg["vely_mean"],
-            vely_std=normalizer_cfg["vely_std"],
-            numeric_sim_params_min=normalizer_cfg["sim_params_min"],
-            numeric_sim_params_max=normalizer_cfg["sim_params_max"],
-        )
         return StandardNormalizer(constants)
+    if normalizer_cfg["name"] == "phase":
+        return PhaseNormalizer(constants)
     if normalizer_cfg["name"] == "no":
         return NoNormalizer()
     else:
@@ -278,7 +292,7 @@ def nested_dict_min(dict1: dict, dict2: dict) -> dict:
 def nested_dict_max(dict1: dict, dict2: dict) -> dict:
     return nested_dict_minmax(dict1, dict2, max)
 
-@hydra.main(config_path="../../../config", config_name="default")    
+@hydra.main(config_path="../../../config", config_name="default", version_base="1.1")    
 def main(cfg: DictConfig):
     """
     This script computes and prints constants that can be used for normalizing the data.
