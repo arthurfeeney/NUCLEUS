@@ -25,7 +25,7 @@ import braceexpand
 from nucleus.data.batching import collate
 from nucleus.data.normalize import get_normalizer
 from nucleus.data import ForecastDataset, InMemForecastDataset, forecast_web_dataset
-from nucleus.modules import get_train_module
+from nucleus.models.modules import get_train_module
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 from nucleus.utils.parameter_count import count_model_parameters
 
