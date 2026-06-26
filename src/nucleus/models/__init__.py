@@ -1,6 +1,7 @@
 from .nucleus1_moe import Nucleus1ViTMoE, Nucleus1AxialMoE, Nucleus1NeighborMoE, Nucleus1MoEConfig
 from .nucleus1_vit import Nucleus1ViT, Nucleus1AxialViT, Nucleus1NeighborViT, Nucleus1ViTConfig
 from .nucleus2_moe import Nucleus2MoE, Nucleus2MoEConfig
+from .nucleus2_moe_phase import Nucleus2MoEPhase
 from .unets import ModernUnet, ClassicUnet
 from .bubbleformer_vit import BubbleformerViT, BubbleformerFilmViT
 from nucleus.baseline.moe_dpot import MoEPOTNet as MoEPOTNetModule

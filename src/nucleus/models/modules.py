@@ -431,5 +431,7 @@ def get_train_module(module_name: str):
         return ConditionedForecastModule
     elif module_name == "moe_conditioned_forecast":
         return MoEConditionedForecastModule
+    elif module_name == "phase_forecast_module":
+        return PhaseForecastModule
     else:
         raise ValueError(f"Module {module_name} not supported")
