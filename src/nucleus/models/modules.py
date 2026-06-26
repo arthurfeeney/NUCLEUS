@@ -362,7 +362,69 @@ class MoEConditionedForecastModule(ModuleBase):
         log_dict = self._moe_metrics(moe_outputs, log_dict, "val")
         self.default_log_dict(log_dict)
         return loss
+    
+class PhaseForecastModule(MoEConditionedForecastModule):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+    def _sdf_to_phase(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        sdf = tensor[..., 0]
+        phase = (sdf > 0).to(torch.int32)
+        fields = tensor[..., 1:]
+        return fields, phase
+        
+    def forward(self, batch: CollatedBatch):
+        fields, phase = self._sdf_to_phase(batch.input)
+        return self.model(fields, phase, batch.sim_params_tensor)
+    
+    def training_step(self, batch: CollatedBatch, batch_idx: int):
+        fields, phase = self._sdf_to_phase(batch.input)
+        with torch.no_grad():
+            for aug in self.augmentations:
+                fields = aug(fields)
+        pred_fields, pred_phase_logits, moe_outputs = self.model(fields, phase, batch.sim_params_tensor)
+        target_fields, target_phase = self._sdf_to_phase(batch.target)
+        
+        field_loss = self.criterion(pred_fields, target_fields)
+        phase_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            pred_phase_logits, target_phase.to(torch.float32)
+        )
 
+        data_loss = field_loss + phase_loss
+        
+        aux_loss, router_has_loss = self._router_loss(moe_outputs)
+        loss = data_loss + aux_loss
+    
+        self._update_router_bias(moe_outputs)
+
+        log_dict = {
+            "train/loss": loss,
+            "train/field_loss": field_loss,
+            "train/phase_loss": phase_loss,
+            "train/data_loss": data_loss,
+            "train/step": self.global_step,
+            "train/learning_rate": self.get_current_lr(),
+        }
+        log_dict = self._moe_metrics(moe_outputs, log_dict, "train")
+        self.default_log_dict(log_dict)
+        return loss
+    
+    def validation_step(self, batch: CollatedBatch, batch_idx: int) -> torch.Tensor:
+        fields, phase = self._sdf_to_phase(batch.input)
+        pred_fields, pred_phase_logits, moe_outputs = self.model(fields, phase, batch.sim_params_tensor)
+        target_fields, target_phase = self._sdf_to_phase(batch.target)
+        
+        field_loss = self.criterion(pred_fields, target_fields)
+        phase_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            pred_phase_logits, target_phase.to(torch.float32)
+        )
+
+        loss = field_loss + phase_loss
+
+        log_dict = { "val/loss": loss, "val/field_loss": field_loss, "val/phase_loss": phase_loss }
+        log_dict = self._moe_metrics(moe_outputs, log_dict, "val")
+        self.default_log_dict(log_dict)
+        return loss
 
 def get_train_module(module_name: str):
     if module_name == "conditioned_forecast":
