@@ -47,7 +47,8 @@ All unit tests should pass or be skipped. No tests should fail.
 You should not edit a correct, but failing test to force it to pass. You should
 always correct the code in `src/nucleus`.
 
-You can also run a benchmark to time the nucleus2_moe.
+Any new unit tests should be written in a subdirectory of `test/`. You should not
+write tests in the `src/` or `scripts/` directories.
 
 ## Slurm
 
