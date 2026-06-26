@@ -111,15 +111,13 @@ class RouterBase(nn.Module):
         
     def forward(self, x, router_bias: Optional[torch.Tensor] = None):       
         router_logits = self.router(x)
-
-        score = torch.clamp(router_logits, min=-2, max=2)
         
         if router_bias is not None:
-            biased_score = score + router_bias[None, :]
+            biased_score = router_logits + router_bias[None, :]
             _, topk_indices = torch.topk(biased_score, k=self.topk, dim=-1)
-            topk_scores = torch.gather(score, dim=-1, index=topk_indices)
+            topk_scores = torch.gather(router_logits, dim=-1, index=topk_indices)
         else:
-            topk_scores, topk_indices = torch.topk(score, k=self.topk, dim=-1)
+            topk_scores, topk_indices = torch.topk(router_logits, k=self.topk, dim=-1)
         
         topk_probs = F.softmax(topk_scores, dim=-1)
                 
