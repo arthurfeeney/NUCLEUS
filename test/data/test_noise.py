@@ -1,6 +1,11 @@
 import torch
 
-from nucleus.noise import PhaseFlip, _dilate_mask
+from nucleus.noise import (
+    SpuriousBulkNucleation,
+    InterfaceJitter,
+    BubbleResize,
+    _dilate_mask,
+)
 
 
 def test_dilate_mask_grows_single_cell_into_disk():
@@ -22,58 +27,53 @@ def test_dilate_mask_larger_radius_is_rounded():
     assert dilated[0, 0, 5, 2] and dilated[0, 0, 2, 5]
 
 
-def test_phase_flip_preserves_shape_and_binary():
+def test_phase_augmentations_preserve_shape_and_binary():
     torch.manual_seed(0)
     phase = (torch.rand(2, 3, 16, 16) > 0.5).to(torch.int32)
-    flip = PhaseFlip(active_prob=1.0)
-    out = flip(phase)
-    assert out.shape == phase.shape
-    assert out.dtype == phase.dtype
-    assert set(out.unique().tolist()) <= {0, 1}
+    for augmentation in (
+        SpuriousBulkNucleation(active_prob=1.0),
+        InterfaceJitter(active_prob=1.0),
+        BubbleResize(active_prob=1.0),
+    ):
+        out = augmentation(phase)
+        assert out.shape == phase.shape
+        assert out.dtype == phase.dtype
+        assert set(out.unique().tolist()) <= {0, 1}
 
 
-def test_phase_flip_inactive_returns_input_unchanged():
+def test_phase_augmentations_inactive_return_input_unchanged():
     phase = (torch.rand(1, 2, 8, 8) > 0.5).to(torch.int32)
-    flip = PhaseFlip(active_prob=0.0)
-    assert torch.equal(flip(phase), phase)
+    for augmentation in (
+        SpuriousBulkNucleation(active_prob=0.0),
+        InterfaceJitter(active_prob=0.0),
+        BubbleResize(active_prob=0.0),
+    ):
+        assert torch.equal(augmentation(phase), phase)
 
 
-def test_phase_flip_protects_bubble_interior():
+def test_interface_jitter_protects_bubble_interior():
     phase = torch.zeros(1, 1, 16, 16, dtype=torch.int32)
     phase[0, 0, 4:12, 4:12] = 1  # solid vapor block
-    flip = PhaseFlip(
+    jitter = InterfaceJitter(
         active_prob=1.0,
         interface_flip_prob=1.0,
-        bulk_flip_prob=0.0,
-        resize_prob=0.0,
         interface_radius=1,
     )
-    out = flip(phase)
+    out = jitter(phase)
     # cells more than interface_radius from any liquid cell must stay vapor
     assert out[0, 0, 6:10, 6:10].all()
 
 
-def test_phase_flip_bulk_nucleation_fills_liquid():
+def test_spurious_bulk_nucleation_fills_liquid():
     phase = torch.zeros(1, 1, 16, 16, dtype=torch.int32)  # all liquid, no bubbles
-    flip = PhaseFlip(
-        active_prob=1.0,
-        bulk_flip_prob=1.0,
-        interface_flip_prob=0.0,
-        resize_prob=0.0,
-    )
-    assert (flip(phase) == 1).all()
+    nucleation = SpuriousBulkNucleation(active_prob=1.0, bulk_flip_prob=1.0)
+    assert (nucleation(phase) == 1).all()
 
 
-def test_phase_flip_grow_increases_vapor():
+def test_bubble_resize_changes_vapor_count():
     phase = torch.zeros(1, 1, 16, 16, dtype=torch.int32)
     phase[0, 0, 6:10, 6:10] = 1
-    flip = PhaseFlip(
-        active_prob=1.0,
-        bulk_flip_prob=0.0,
-        interface_flip_prob=0.0,
-        resize_prob=1.0,
-        max_resize_radius=1,
-    )
+    resize = BubbleResize(active_prob=1.0, max_resize_radius=1)
     # resize randomly grows or shrinks; over several draws the count must change
-    counts = {flip(phase).sum().item() for _ in range(20)}
+    counts = {resize(phase).sum().item() for _ in range(20)}
     assert counts != {16}

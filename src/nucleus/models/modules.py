@@ -23,7 +23,10 @@ from nucleus.utils.physical_metrics import (
 from nucleus.noise import (
     LogUniformNoise,
     FieldDropout,
-    FrameDropout
+    FrameDropout,
+    SpuriousBulkNucleation,
+    BubbleResize,
+    InterfaceJitter
 )
 
 
@@ -372,6 +375,11 @@ class MoEConditionedForecastModule(ModuleBase):
 class PhaseForecastModule(MoEConditionedForecastModule):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.phase_augmentations = [
+            SpuriousBulkNucleation(),
+            BubbleResize(),
+            InterfaceJitter()
+        ]
         
     def _sdf_to_phase(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         sdf = tensor[..., 0]
@@ -403,10 +411,14 @@ class PhaseForecastModule(MoEConditionedForecastModule):
     
     def training_step(self, batch: CollatedBatch, batch_idx: int):
         fields, phase = self._sdf_to_phase(batch.input)
+        augmented_phase = phase.clone()
         with torch.no_grad():
             for aug in self.augmentations:
                 fields = aug(fields)
-        pred_fields, pred_phase_logits, moe_outputs = self.model.step(fields, phase, batch.sim_params_tensor)
+            for aug in self.phase_augmentations:
+                augmented_phase = aug(augmented_phase)
+                
+        pred_fields, pred_phase_logits, moe_outputs = self.model.step(fields, augmented_phase, batch.sim_params_tensor)
         target_fields, target_phase = self._sdf_to_phase(batch.target)
         
         field_loss = self.criterion(pred_fields, target_fields)
