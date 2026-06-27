@@ -20,15 +20,15 @@ uv sync --no-cache --active --extra cu130
 uv pip install -e .
 
 python scripts/train.py \
-    model_cfg=nucleus2/nucleus2_experiment \
+    model_cfg=nucleus2/nucleus2_phase \
     model_cfg.params.processor_blocks=8 \
-    model_cfg.params.embed_dim=768 \
+    model_cfg.params.embed_dim=512 \
     model_cfg.params.num_experts=6 \
     model_cfg.params.moe_intermediate_dim=2048 \
     model_cfg.params.patching="Linear" \
     model_cfg.params.activation_dtype="float32" \
     data_cfg=poolboiling64 \
-    normalizer_cfg=standard \
+    normalizer_cfg=phase \
     batch_size=64 \
     optim_cfg.params.lr=1e-3 \
     optim_cfg.params.weight_decay=1e-2 \

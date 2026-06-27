@@ -16,7 +16,6 @@ def vapor_volume(sdf, dx, dy):
     vapor_mask = sdf > 0
     return vapor_mask.astype(float).sum(axis=(-2, -1)) * dx * dy
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", required=True, type=str)

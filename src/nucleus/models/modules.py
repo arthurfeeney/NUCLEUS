@@ -1,6 +1,7 @@
 import random
 import time
 from typing import Tuple, Optional, List
+from math import sqrt
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
@@ -13,7 +14,7 @@ from nucleus.data.batching import CollatedBatch
 from nucleus.models import get_model, load_model_from_checkpoint
 from nucleus.utils.lr_schedulers import CosineWarmupLR, TrapezoidalLR
 from nucleus.layers.moe.topk_moe import TopkRouterWithBias
-from nucleus.utils.losses import phase_bce_with_logits_loss
+from nucleus.utils.losses import phase_bce_with_logits_loss, field_gradient_loss
 from nucleus.utils.metrics import precision_recall
 from nucleus.utils.physical_metrics import (
     eikonal,
@@ -57,6 +58,8 @@ class ModuleBase(L.LightningModule):
 
         self.load_balance_loss_weight = self.model_cfg["params"].pop("load_balance_loss_weight", 1e-5)
         self.z_loss_weight = self.model_cfg["params"].pop("z_loss_weight", 1e-5)
+        self.gradient_loss_weight = self.model_cfg["params"].pop("gradient_loss_weight", 1e-2)
+        
         self.num_windows = self.model_cfg["params"].pop("num_windows", 3)
 
         if self.checkpoint_path is not None:
@@ -412,19 +415,21 @@ class PhaseForecastModule(MoEConditionedForecastModule):
     def training_step(self, batch: CollatedBatch, batch_idx: int):
         fields, phase = self._sdf_to_phase(batch.input)
         augmented_phase = phase.clone()
-        with torch.no_grad():
-            for aug in self.augmentations:
-                fields = aug(fields)
-            for aug in self.phase_augmentations:
-                augmented_phase = aug(augmented_phase)
+        if self.global_step > self.scheduler_cfg["params"]["warmup"]:
+            with torch.no_grad():
+                for aug in self.augmentations:
+                    fields = aug(fields)
+                for aug in self.phase_augmentations:
+                    augmented_phase = aug(augmented_phase)
                 
         pred_fields, pred_phase_logits, moe_outputs = self.model.step(fields, augmented_phase, batch.sim_params_tensor)
         target_fields, target_phase = self._sdf_to_phase(batch.target)
         
         field_loss = self.criterion(pred_fields, target_fields)
-        phase_loss = phase_bce_with_logits_loss(phase, target_phase, pred_phase_logits, 2.0, 20.0)
-        data_loss = field_loss + phase_loss
-        
+        phase_loss = phase_bce_with_logits_loss(phase, target_phase, pred_phase_logits, 1.5, sqrt(20))
+        gradient_loss = self.gradient_loss_weight * field_gradient_loss(pred_fields, target_fields)
+        data_loss = field_loss + phase_loss + gradient_loss
+
         aux_loss, router_has_loss = self._router_loss(moe_outputs)
         loss = data_loss + aux_loss
         self._update_router_bias(moe_outputs)
@@ -433,6 +438,7 @@ class PhaseForecastModule(MoEConditionedForecastModule):
             "train/loss": loss,
             "train/field_loss": field_loss,
             "train/phase_loss": phase_loss,
+            "train/gradient_loss": gradient_loss,
             "train/data_loss": data_loss,
             "train/step": self.global_step,
             "train/learning_rate": self.get_current_lr(),
@@ -449,9 +455,15 @@ class PhaseForecastModule(MoEConditionedForecastModule):
 
         field_loss = self.criterion(pred_fields, target_fields)
         phase_loss = phase_bce_with_logits_loss(phase, target_phase, pred_phase_logits, 2.0, 20.0)
+        gradient_loss = self.gradient_loss_weight * field_gradient_loss(pred_fields, target_fields)
         loss = field_loss + phase_loss
 
-        log_dict = { "val/loss": loss, "val/field_loss": field_loss, "val/phase_loss": phase_loss }
+        log_dict = {
+            "val/loss": loss,
+            "val/field_loss": field_loss,
+            "val/phase_loss": phase_loss,
+            "val/gradient_loss": gradient_loss,
+        }
         log_dict |= self._phase_precision_recall(phase, target_phase, pred_phase_logits, "val")
         log_dict = self._moe_metrics(moe_outputs, log_dict, "val")
         self.default_log_dict(log_dict)

@@ -50,6 +50,16 @@ class Nucleus2MoEPhase(Nucleus2MoE):
         phase = (batch.input[..., 0] > 0).to(torch.int32)
         fields = batch.input[..., 1:]
         return self.step(fields, phase, batch.sim_params_tensor)
+    
+    def _soft_phase_embed(self, phase_logits: torch.Tensor) -> torch.Tensor:
+        # Blend the liquid/vapor embedding rows by the predicted vapor probability
+        # instead of looking up a hard index. This keeps the field head's gradient
+        # flowing back into the phase head, so the heads are trained to agree rather
+        # than just sharing a trunk.
+        vapor_prob = torch.sigmoid(phase_logits).unsqueeze(-1)   # (B, T, H, W, 1)
+        liquid_embed = self.phase_embed.weight[0]                # (D,)
+        vapor_embed = self.phase_embed.weight[1]                 # (D,)
+        return liquid_embed + vapor_prob * (vapor_embed - liquid_embed)
 
     def step(self, input: torch.Tensor, phase: torch.Tensor, sim_params: torch.Tensor):
         r"""
@@ -85,11 +95,18 @@ class Nucleus2MoEPhase(Nucleus2MoE):
             with record_function(f"block_{idx}"):
                 x, moe_output = blk(x, rotary_freqs, sim_params)
                 moe_outputs.append(moe_output)
-    
+        
         with record_function("debed"):
-            x = self.out_norm(x.to(self.debed_dtype) + field_patches.to(self.debed_dtype) + phase_patches.to(self.debed_dtype)) 
-            fields = self.debed(x, target_shape=(h, w))
+            x = self.out_norm(
+                x.to(self.debed_dtype) + 
+                field_patches.to(self.debed_dtype) + 
+                phase_patches.to(self.debed_dtype)
+            ) 
+            
             phase_logits = self.phase_unpatcher(x, target_shape=(h, w)).squeeze(-1)
+            #soft_phase = self._soft_phase_embed(phase_logits).to(self.debed_dtype)
+            #print(x.size(), soft_phase.size())
+            fields = self.debed(x, target_shape=(h, w))
             
         #temp, velx, vely = fields.unbind(dim=-1)
         # TODO: clip temp based on saturation temp (need to pass to step...)

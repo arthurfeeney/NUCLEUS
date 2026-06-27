@@ -20,8 +20,8 @@ uv sync --no-cache --active --extra cu130
 uv pip install -e .
 
 python scripts/inf.py \
-    model_cfg=nucleus2/nucleus2_experiment \
-    checkpoint_path=/pub/afeeney/nucleus_logs/nucleus2_moe_poolboiling64_2026-06-22_53641953/checkpoints/last.ckpt \
+    model_cfg=nucleus2/nucleus2_phase \
+    checkpoint_path=/pub/afeeney/nucleus_logs/nucleus2_moe_phase_poolboiling64_2026-06-26_53731652/checkpoints/last.ckpt \
     data_cfg=poolboiling64 \
-    normalizer_cfg=standard \
+    normalizer_cfg=phase \
     log_dir=/pub/afeeney/nucleus_logs/ \

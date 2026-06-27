@@ -138,6 +138,20 @@ class L1RelativeLoss(nn.Module):
         # Add each loss and take mean over batch dimensions.
         return (sdf_loss + temp_loss + velx_loss + vely_loss).mean()
     
+def field_gradient_loss(pred_fields: torch.Tensor, target_fields: torch.Tensor) -> torch.Tensor:
+    r"""
+    L1 loss on the spatial gradients of the fields, for tensors shaped
+    (B, T, H, W, C). Penalizing slope mismatch rather than only point values
+    discourages the over-smoothing.
+    """
+    spatial_dims = (-3, -2)
+    pred_grad_y, pred_grad_x = torch.gradient(pred_fields, dim=spatial_dims)
+    target_grad_y, target_grad_x = torch.gradient(target_fields, dim=spatial_dims)
+    return (
+        torch.nn.functional.l1_loss(pred_grad_x, target_grad_x)
+        + torch.nn.functional.l1_loss(pred_grad_y, target_grad_y)
+    )
+
 def phase_bce_with_logits_loss(
     input_phase, 
     target_phase, 
