@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.profiler import record_function
 from rotary_embedding_torch import RotaryEmbedding
-from typing import Literal
+from typing import Literal, Optional
 
 from nucleus.layers.adaptive_layernorm import AdaptiveLayerNorm
 from nucleus.layers.attention import NeighborhoodAttention
@@ -18,6 +18,7 @@ from nucleus.layers import (
 )
 from nucleus.data.batching import CollatedBatch
 from nucleus.utils.sdf_reinit import sdf_reinit_sussman
+from nucleus.utils.inf_stabilizer import NormalizedTempLimits, clip_temp_by_phase
 
 from ._api import register_model
 
@@ -249,12 +250,13 @@ class MoEBase(nn.Module):
         output_time_window_size: int,
         trajectory_steps: int,
         use_sdf_reinit: bool = False,
-        return_moe_outputs: bool = False
+        return_moe_outputs: bool = False,
+        normalized_temp_limits: Optional[NormalizedTempLimits] = None,
     ):
         assert initial_state.dim() == 5, "initial state must be [B, T, H, W, C]"
         assert sim_params.dim() == 2, "fluid params must be [B, num_params]"
         assert initial_state.shape[0] == sim_params.shape[0]
-        assert input_time_window_size == initial_state.shape[1]
+        assert input_time_window_size <= initial_state.shape[1]
 
         trajectory = initial_state.clone()
         trajectory_moe_outputs = [] if return_moe_outputs else None
@@ -265,6 +267,14 @@ class MoEBase(nn.Module):
 
             if use_sdf_reinit:
                 output_time_window[..., 0] = sdf_reinit_sussman(output_time_window[..., 0], dx=dx, n_iter=5)
+                
+            if normalized_temp_limits:
+                output_time_window[..., 1] = clip_temp_by_phase(
+                    output_time_window[..., 1],
+                    output_time_window[..., 0],
+                    # need to be normalized using the normalization parameters for the temperature field.
+                    normalized_temp_limits
+                )
 
             trajectory = torch.cat((trajectory, output_time_window), dim=1)
             if return_moe_outputs:
