@@ -15,6 +15,9 @@ class AdaptiveLayerNorm(nn.Module):
             nn.LayerNorm(num_sim_params),
             nn.Linear(num_sim_params, embed_dim * 2),
         )
+        # Start as identity: gamma = beta = 0 so (1 + gamma) * x + beta == x.
+        nn.init.zeros_(self.modulation[-1].weight)
+        nn.init.zeros_(self.modulation[-1].bias)
 
     def forward(self, x: torch.Tensor, sim_params: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] != self.embed_dim:
