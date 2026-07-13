@@ -68,9 +68,9 @@ class ModuleBase(L.LightningModule):
             self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
 
         self.augmentations = [
-            LogUniformNoise(0.001, 0.3, skip_prob=0.1),
+            LogUniformNoise(0.001, 5e-2, skip_prob=0.1),
             FieldDropout(),
-            FrameDropout(),
+            #FrameDropout(),
         ]
 
         self.t_max = None
@@ -110,8 +110,8 @@ class ModuleBase(L.LightningModule):
                 f"{prefix}/pred_std": pred.std(),
                 f"{prefix}/target_mean": target.mean(),
                 f"{prefix}/target_std": target.std(),
-                f"{prefix}/eikonal_loss": (1 - eikonal(pred[..., 0], dx, dy)).abs().mean(),
-                f"{prefix}/liquid_divergence": liquid_divergence(pred[..., 2], pred[..., 3], pred[..., 0], dx, dy).mean(),
+                #f"{prefix}/eikonal_loss": (1 - eikonal(pred[..., 0], dx, dy)).abs().mean(),
+                #f"{prefix}/liquid_divergence": liquid_divergence(pred[..., 2], pred[..., 3], pred[..., 0], dx, dy).mean(),
             }
 
     # ------------------------------------------------------------------
@@ -131,12 +131,29 @@ class ModuleBase(L.LightningModule):
     def validation_step(self, batch, batch_idx: int) -> torch.Tensor:
         raise NotImplementedError
 
+    def _weight_decay_param_groups(self, weight_decay: float):
+        # Only weight-decay >=2D weights (matmul / conv). 1D params -- biases,
+        # LayerNorm/RMSNorm gains, scalar scales -- are excluded so weight decay
+        # can't shrink them toward zero.
+        decay, no_decay = [], []
+        for param in self.model.parameters():
+            if not param.requires_grad:
+                continue
+            (decay if param.ndim >= 2 else no_decay).append(param)
+        return [
+            {"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ]
+
     def configure_optimizers(self):
         opt_name = self.optimizer_cfg["name"]
         opt_params = self.optimizer_cfg["params"]
         opt_params["lr"] = torch.tensor(opt_params["lr"])
         if opt_name == "adamw":
-            optimizer = [AdamW(self.model.parameters(), **opt_params, fused=True)]
+            weight_decay = opt_params.get("weight_decay", 0.0)
+            adamw_kwargs = {key: value for key, value in opt_params.items() if key != "weight_decay"}
+            param_groups = self._weight_decay_param_groups(weight_decay)
+            optimizer = [AdamW(param_groups, **adamw_kwargs, fused=True)]
         elif opt_name == "adam":
             optimizer = [Adam(self.model.parameters(), **opt_params)]
         elif opt_name == "lion":
@@ -357,7 +374,7 @@ class MoEConditionedForecastModule(ModuleBase):
             "train/step": self.global_step,
             "train/learning_rate": self.get_current_lr(),
         }
-        log_dict = self.log_step_metrics(log_dict, pred, batch.target, batch, "train")
+        log_dict = self.log_step_metrics(log_dict, pred, batch.target, batch.dx, batch.dy, "train")
         log_dict = self._moe_metrics(moe_outputs, log_dict, "train")
         self.default_log_dict(log_dict)
         return loss
@@ -370,7 +387,7 @@ class MoEConditionedForecastModule(ModuleBase):
             self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
 
         log_dict = { "val/loss": loss }
-        log_dict = self.log_step_metrics(log_dict, pred, batch.target, batch, "val")
+        log_dict = self.log_step_metrics(log_dict, pred, batch.target, batch.dx[0].item(), batch.dy[0].item(), "val")
         log_dict = self._moe_metrics(moe_outputs, log_dict, "val")
         self.default_log_dict(log_dict)
         return loss
