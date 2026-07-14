@@ -1,5 +1,4 @@
 from hydra import initialize, compose
-import os
 import torch
 
 from nucleus.data.batching import CollatedBatch
@@ -7,7 +6,10 @@ from nucleus.models.modules import get_train_module
 
 def test_phase_forecast_module():
     with initialize(version_base=None, config_path="../../config"):
-        cfg = compose(config_name="default", overrides=["model_cfg=nucleus2/nucleus2_phase"])
+        cfg = compose(
+            config_name="default",
+            overrides=["model_cfg=nucleus2/nucleus2_phase", "data_dir=/tmp"],
+        )
         
     Module = get_train_module(cfg.model_cfg.train_module_name)
     module = Module(
