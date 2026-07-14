@@ -5,6 +5,7 @@
 #SBATCH -o slurm-%x-%j.out
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
+#SBATCH --mem=100GB
 #SBATCH --gres=gpu:RTX6000:1
 #SBATCH --time=12:59:00
 
@@ -20,19 +21,21 @@ uv sync --no-cache --active --extra cu130
 uv pip install -e .
 
 python scripts/train.py \
-    model_cfg=nucleus2/nucleus2_phase \
+    model_cfg=nucleus2/nucleus2_divfree \
     model_cfg.params.processor_blocks=8 \
     model_cfg.params.embed_dim=512 \
     model_cfg.params.num_experts=6 \
-    model_cfg.params.moe_intermediate_dim=2048 \
+    model_cfg.params.moe_intermediate_dim=1024 \
+    model_cfg.params.patch_size=16 \
     model_cfg.params.patching="Linear" \
     model_cfg.params.activation_dtype="float32" \
-    data_cfg=poolboiling64 \
-    normalizer_cfg=phase \
-    batch_size=64 \
-    optim_cfg.params.lr=1e-3 \
-    optim_cfg.params.weight_decay=1e-2 \
+    data_cfg=poolboiling \
+    normalizer_cfg=divfree \
+    batch_size=8 \
+    accumulate_grad_batches=2 \
+    optim_cfg.params.lr=2e-3 \
+    optim_cfg.params.weight_decay=1e-3 \
     scheduler_cfg=trapezoidal \
-    scheduler_cfg.params.warmup=1000 \
-    scheduler_cfg.params.cooldown=5000 \
+    scheduler_cfg.params.warmup=2000 \
+    scheduler_cfg.params.cooldown=2000 \
     log_dir=/pub/afeeney/nucleus_logs
