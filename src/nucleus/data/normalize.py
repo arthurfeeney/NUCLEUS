@@ -13,11 +13,11 @@ class NormalizerConstants:
     max_domain_size: float
     sdf_mean: float
     sdf_std: float
-    
+
     absmax_temp: float
     temp_mean: float
     temp_std: float
-    
+
     velx_mean: float
     velx_std: float
 
@@ -26,7 +26,7 @@ class NormalizerConstants:
 
     numeric_sim_params_min: Optional[dict] = None
     numeric_sim_params_max: Optional[dict] = None
-    
+
     def to_yaml_string(self) -> str:
         r"""
         This returns a YAML string that can be used as a config file for the normalizer.
@@ -43,15 +43,15 @@ class NormalizerConstants:
             f"vely_mean: {self.vely_mean}",
             f"vely_std: {self.vely_std}",
         ]
-        
+
         fmin = yaml.dump({"sim_params_min": self.numeric_sim_params_min}, default_flow_style=False) if self.numeric_sim_params_min is not None else None
         fmax = yaml.dump({"sim_params_max": self.numeric_sim_params_max}, default_flow_style=False) if self.numeric_sim_params_max is not None else None
-                
+
         if fmin:
             sim_params_yaml.append(fmin)
         if fmax:
             sim_params_yaml.append(fmax)
-        
+
         return "\n".join(sim_params_yaml)
 
 def minmax_normalize(value: float, min: float, max: float) -> float:
@@ -107,11 +107,17 @@ def dict_normalize_helper(dict_to_normalize: dict, func: Callable, min_dict: dic
 class Normalizer:
     def __init__(self, constants: NormalizerConstants):
         self.constants = constants
-        
+
+    def normalize_scalar_with_temp(self, scalar: float, bulk_temp: float) -> float:
+        pass
+
+    def normalize_scalar_with_sdf(self, scalar: float) -> float:
+        return (scalar - self.constants.sdf_mean) / self.constants.sdf_std
+
     def normalize_params(self, sim_params_dicts: List[dict]) -> List[dict]:
         return [
             dict_normalize_helper(sim_params_dict, minmax_normalize, self.constants.numeric_sim_params_min, self.constants.numeric_sim_params_max)
-            for sim_params_dict in sim_params_dicts 
+            for sim_params_dict in sim_params_dicts
         ]
     def unnormalize_params(self, sim_params_dicts: List[dict]) -> List[dict]:
         return [
@@ -127,22 +133,22 @@ class Normalizer:
 
     def normalize_velx(self, vel: torch.Tensor) -> torch.Tensor:
         return (vel - self.constants.velx_mean) / self.constants.velx_std
-    
+
     def unnormalize_velx(self, vel: torch.Tensor) -> torch.Tensor:
         return vel * self.constants.velx_std + self.constants.velx_mean
-    
+
     def normalize_vely(self, vel: torch.Tensor) -> torch.Tensor:
         return (vel - self.constants.vely_mean) / self.constants.vely_std
-    
+
     def unnormalize_vely(self, vel: torch.Tensor) -> torch.Tensor:
         return vel * self.constants.vely_std + self.constants.vely_mean
-    
+
     def normalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
         return (sdf - self.constants.sdf_mean) / self.constants.sdf_std
-    
+
     def unnormalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
         return sdf * self.constants.sdf_std + self.constants.sdf_mean
-    
+
     def normalize(self, data: torch.Tensor, bulk_temp: torch.Tensor, layout: str = "t h w c") -> torch.Tensor:
         assert data.dim() >= 4, "Data must be at least 4D (..., T, H, W, C)"
         assert data.shape[-1] == 4, "Data must have 4 channels (sdf, temp, velx, vely)"
@@ -180,54 +186,98 @@ class StandardNormalizer(Normalizer):
     """
     def __init__(self, constants: NormalizerConstants):
         super().__init__(constants)
-        
+
+    def normalize_scalar_with_temp(self, scalar: float, bulk_temp: float) -> float:
+        return ((scalar - bulk_temp) - self.constants.temp_mean) / self.constants.temp_std
+
     def normalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
         if not isinstance(bulk_temp, (int, float)):
             bt = bulk_temp[..., None, None, None] # (..., 1, 1, 1) for broadcasting T, H, W
         else:
             bt = bulk_temp
         return ((temp - bt) - self.constants.temp_mean) / self.constants.temp_std
-    
+
     def unnormalize_temp(self, temp: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
         if not isinstance(bulk_temp, (int, float)):
             bt = bulk_temp[..., None, None, None] # (..., 1, 1, 1) for broadcasting T, H, W
         else:
             bt = bulk_temp
         return temp * self.constants.temp_std + self.constants.temp_mean + bt
-    
+
+class PhaseNormalizer(StandardNormalizer):
+    r"""
+    This is the same as the StandardNormalizer, but does NOT normalize the SDF. This is intended
+    to be used with models that process a phase mask rather than the SDF. Not normalizing the SDF
+    makes it easy to convert to a phase mask, since we can just do `phase_mask = sdf > 0`. If the
+    """
+    def normalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
+        return sdf
+
+    def unnormalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
+        return sdf
+
+class DivFreeNormalizer(StandardNormalizer):
+    r"""
+    normalizes velx and vely with a shared stdt scalar. This allows a model
+    producing divergence free outputs that can be divergence free regardless of 
+    whether the data is normalized or not.
+    """
+    def __init__(self, constants: NormalizerConstants):
+        super().__init__(constants)
+        # Pooled std of the mean-centered components (equal-weight RMS of the two
+        # per-component stds). Any single shared scalar preserves div-freeness.
+        # This one keeps the combined velocity roughly unit-variance.
+        self.vel_std = math.sqrt((constants.velx_std ** 2 + constants.vely_std ** 2) / 2)
+
+    def normalize_velx(self, vel: torch.Tensor) -> torch.Tensor:
+        return (vel - self.constants.velx_mean) / self.vel_std
+
+    def unnormalize_velx(self, vel: torch.Tensor) -> torch.Tensor:
+        return vel * self.vel_std + self.constants.velx_mean
+
+    def normalize_vely(self, vel: torch.Tensor) -> torch.Tensor:
+        return (vel - self.constants.vely_mean) / self.vel_std
+
+    def unnormalize_vely(self, vel: torch.Tensor) -> torch.Tensor:
+        return vel * self.vel_std + self.constants.vely_mean
+
 class NoNormalizer(Normalizer):
     def __init__(self):
         super().__init__(None)
-    
+
     def normalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
         return data
-    
+
     def unnormalize(self, data: torch.Tensor, bulk_temp: torch.Tensor) -> torch.Tensor:
         return data
-    
+
     def normalize_params(self, sim_params_dicts: List[dict]) -> List[dict]:
         return sim_params_dicts
-    
+
     def unnormalize_params(self, sim_params_dicts: List[dict]) -> List[dict]:
         return sim_params_dicts
-    
+
 def get_normalizer(normalizer_cfg: dict) -> Normalizer:
+    constants = NormalizerConstants(
+        max_domain_size=normalizer_cfg["max_domain_size"],
+        sdf_mean=normalizer_cfg["sdf_mean"],
+        sdf_std=normalizer_cfg["sdf_std"],
+        absmax_temp=normalizer_cfg["absmax_temp"],
+        temp_mean=normalizer_cfg["temp_mean"],
+        temp_std=normalizer_cfg["temp_std"],
+        velx_mean=normalizer_cfg["velx_mean"],
+        velx_std=normalizer_cfg["velx_std"],
+        vely_mean=normalizer_cfg["vely_mean"],
+        vely_std=normalizer_cfg["vely_std"],
+        numeric_sim_params_min=normalizer_cfg["sim_params_min"],
+        numeric_sim_params_max=normalizer_cfg["sim_params_max"],
+    )
     if normalizer_cfg["name"] == "standard":
-        constants = NormalizerConstants(
-            max_domain_size=normalizer_cfg["max_domain_size"],
-            sdf_mean=normalizer_cfg["sdf_mean"],
-            sdf_std=normalizer_cfg["sdf_std"],
-            absmax_temp=normalizer_cfg["absmax_temp"],
-            temp_mean=normalizer_cfg["temp_mean"],
-            temp_std=normalizer_cfg["temp_std"],
-            velx_mean=normalizer_cfg["velx_mean"],
-            velx_std=normalizer_cfg["velx_std"],
-            vely_mean=normalizer_cfg["vely_mean"],
-            vely_std=normalizer_cfg["vely_std"],
-            numeric_sim_params_min=normalizer_cfg["sim_params_min"],
-            numeric_sim_params_max=normalizer_cfg["sim_params_max"],
-        )
         return StandardNormalizer(constants)
+    if normalizer_cfg["name"] == "phase":
+        return PhaseNormalizer(constants)
+    if normalizer_cfg["name"] == "divfree":
+        return DivFreeNormalizer(constants)
     if normalizer_cfg["name"] == "no":
         return NoNormalizer()
     else:
@@ -239,26 +289,26 @@ class RunningVariance:
         self.range = range
         self.bins = np.linspace(range[0], range[1], bins, dtype=np.float64)
         self.count = 0
-        
+
     def update(self, value: np.ndarray):
         numel = value.size
         if numel == 0:
             return
         self.hist += np.histogram(value.astype(np.int64), bins=self.bins, range=self.range)[0]
         self.count += numel
-    
+
     def var(self) -> float:
         bin_mid_points = (self.bins[1:] + self.bins[:-1]) / 2
         mean = np.average(bin_mid_points, weights=self.hist)
         return np.average((bin_mid_points - mean) ** 2, weights=self.hist).item()
-    
+
     def std(self) -> float:
         return math.sqrt(self.var())
-    
+
     def mean(self) -> float:
         bin_mid_points = (self.bins[1:] + self.bins[:-1]) / 2
         return np.average(bin_mid_points, weights=self.hist).item()
-    
+
 def nested_dict_minmax(dict1: dict, dict2: dict, op: Callable) -> dict:
     r"""
     Applies a reduction operation `op` to two nested dictionaries (i.e., potentially a dict of dicts). This assumes that the
@@ -278,7 +328,7 @@ def nested_dict_min(dict1: dict, dict2: dict) -> dict:
 def nested_dict_max(dict1: dict, dict2: dict) -> dict:
     return nested_dict_minmax(dict1, dict2, max)
 
-@hydra.main(config_path="../../../config", config_name="default")    
+@hydra.main(config_path="../../../config", config_name="default", version_base="1.1")
 def main(cfg: DictConfig):
     """
     This script computes and prints constants that can be used for normalizing the data.
@@ -287,15 +337,15 @@ def main(cfg: DictConfig):
 
     import h5py
     import json
-    
+
     absmax_temp = float("-inf")
     max_domain_size = float("-inf")
     sim_params_min = None
     sim_params_max = None
-    
+
     start_time = 300
     step_size = 100
-    
+
     # Initial loop to get the limits for the running variances.
     max_sdf = float("-inf")
     max_temp = float("-inf")
@@ -313,12 +363,12 @@ def main(cfg: DictConfig):
         max_temp = max(max_temp, np.abs(temp).max().item() - sim_params_dict["bulk_temp"])
         max_velx = max(max_velx, np.abs(velx).max().item())
         max_vely = max(max_vely, np.abs(vely).max().item())
-    
+
     sdf_running_variance = RunningVariance(bins=1000, range=(-max_sdf, max_sdf))
     temp_running_variance = RunningVariance(bins=1000, range=(-max_temp, max_temp))
     velx_running_variance = RunningVariance(bins=1000, range=(-max_velx, max_velx))
     vely_running_variance = RunningVariance(bins=1000, range=(-max_vely, max_vely))
-    
+
     # Loop to get the normalization constants for the SDF, temperature, and velocities.
     for train_path in cfg.data_cfg.train_paths:
         #print(train_path)
@@ -329,19 +379,19 @@ def main(cfg: DictConfig):
             vely = f["vely"][start_time::step_size]
         with open(train_path.replace(".hdf5", ".json"), "r") as f:
             sim_params_dict = json.load(f)
-        
+
         x_size = sim_params_dict["x_max"] - sim_params_dict["x_min"]
         y_size = sim_params_dict["y_max"] - sim_params_dict["y_min"]
         max_domain_size = max(x_size, y_size)
-        
+
         absmax_temp = max(absmax_temp, np.abs(temp).max() - sim_params_dict["bulk_temp"])
         max_domain_size = max(max_domain_size, max_domain_size)
-        
+
         sdf_running_variance.update(sdf)
         temp_running_variance.update(temp - sim_params_dict["bulk_temp"])
         velx_running_variance.update(velx)
         vely_running_variance.update(vely)
-    
+
         if sim_params_min is None:
             sim_params_min = sim_params_dict
         else:
@@ -350,7 +400,7 @@ def main(cfg: DictConfig):
             sim_params_max = sim_params_dict
         else:
             sim_params_max = nested_dict_max(sim_params_max, sim_params_dict)
-    
+
     constants = NormalizerConstants(
         max_domain_size=max_domain_size,
         sdf_mean=sdf_running_variance.mean(),
@@ -365,9 +415,9 @@ def main(cfg: DictConfig):
         numeric_sim_params_min=sim_params_min,
         numeric_sim_params_max=sim_params_max,
     )
-    
+
     print(constants)
     print(constants.to_yaml_string())
-    
+
 if __name__ == "__main__":
     main()

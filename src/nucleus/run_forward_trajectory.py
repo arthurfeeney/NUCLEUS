@@ -4,6 +4,7 @@ import json
 import torch
 
 from nucleus.data.layout import convert_layout
+from nucleus.utils.inf_stabilizer import NormalizedTempLimits
 
 @dataclass
 class TestResults:
@@ -36,16 +37,23 @@ def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int)
         device=device
     )[None, :]
 
+    normalized_temp_limits = NormalizedTempLimits(
+        normalizer.normalize_scalar_with_temp(sim_params_dict["sat_temp"], sim_params_dict["bulk_temp"]),
+        normalizer.normalize_scalar_with_temp(sim_params_dict["heater"]["wallTemp"], sim_params_dict["bulk_temp"]),
+        normalizer.constants.sdf_mean
+    )
+
     with torch.inference_mode():
         normalized_pred_trajectory: torch.Tensor = model.forward_trajectory(
             convert_layout(normalized_initial_state, target_layout=model.layout, source_layout="t h w c"),
             normalized_sim_params_tensor,
-            dx=1/4,
+            dx=1/32,
             input_time_window_size=8,
             output_time_window_size=8,
             trajectory_steps=trajectory_steps,
             use_sdf_reinit=False,
-            return_moe_outputs=False
+            return_moe_outputs=False,
+            normalized_temp_limits=normalized_temp_limits
         )
         
     pred_trajectory = normalizer.unnormalize(normalized_pred_trajectory, bulk_temp=sim_params_dict["bulk_temp"])

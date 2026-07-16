@@ -6,15 +6,20 @@ import torch
 
 from boiling_viz.boiling_video import BoilingVideoBuilder
 
+
 def load_trajectory(path):
     FIELDS = ["dfun", "temperature", "velx", "vely"]
     with h5py.File(path, "r") as handle:
-        return np.concatenate([handle[field] for field in FIELDS], axis=-1)
-
+        return np.stack([handle[field] for field in FIELDS], axis=0)
 
 def vapor_volume(sdf, dx, dy):
     vapor_mask = sdf > 0
-    return vapor_mask.astype(float).sum(axis=(-2, -1)) * dx * dy
+    return (vapor_mask.to(torch.float32).sum(axis=(-2, -1)) * dx * dy).mean()
+
+def temp_above_heater(temp, x_grid, dx, dy):
+    on_heater = ((x_grid >= -5.25) & (x_grid <= 5.25)).to(temp.device)
+    num_on_heater = on_heater.sum()
+    return ((temp[:, 0] * on_heater).sum(dim=-1) / num_on_heater)
 
 def heat_flux(temp, sdf, heater_temp, dx, dy):
     def denormalize_temp_grad(temp, t_wall, t_bulk=50, k=0.054):
@@ -26,8 +31,6 @@ def heat_flux(temp, sdf, heater_temp, dx, dy):
 
     lc = 0.0007
     x_grid = torch.arange(-8, 8, dx) + dx / 2
-
-    print(temp.min(), temp.max())
 
     liquid_mask = sdf < 0 #temp < 58
 
@@ -45,33 +48,22 @@ def main():
     parser.add_argument("--path", required=True, type=str)
     args = parser.parse_args()
     path = Path(args.path)
-    pred = load_trajectory(path / "pred_trajectory.hdf5")
-    gt = load_trajectory(path / "gt_trajectory.hdf5")
+    traj = load_trajectory(path)
     
-    print(pred.shape)
-    print(gt.shape)
+    traj = torch.from_numpy(traj)
+    
+    print(traj.shape)
         
-    builder = BoilingVideoBuilder(pred[::10])
-    builder.make_video(
-        "./traj.gif", 
-        duration=10, 
-        colorbars=False,
-        step_counter=True,
-        field_titles=True,
-        transparent_nan=False,
-        columnwise=True
-    )
+    down = traj[:, :, 0::4, ::8] # downsample starting from row above heater.
+    
+    # Technically for upsampling it's more important to have the boundary,
+    # since here it's basically interpolating with ghost cells.
+    traj_recon = torch.nn.functional.interpolate(down, (512, 512), mode="bicubic")
 
-    pred_vv = vapor_volume(pred[..., 0], 1/32, 1/32).mean()
-    gt_vv = vapor_volume(gt[..., 0], 1/32, 1/32).mean()
+    print(heat_flux(traj[1], traj[0], 97, 1/32, 1/32))
+    print(heat_flux(down[1], down[0], 97, 1/4, 1/32)) # Use dy=1/32 since gap to heater unchanged
+    print(heat_flux(traj_recon[1], traj_recon[0], 97, 1/32, 1/32))
     
-    pred_hf, pred_qmax = heat_flux(pred[..., 1], pred[..., 0], 97, 1/32, 1/32)
-    gt_hf, gt_qmax = heat_flux(gt[..., 1], gt[..., 0], 97, 1/32, 1/32)
-    
-    print(pred_vv, gt_vv)
-    
-    print(pred_hf, gt_hf)
-    print(pred_qmax, gt_qmax)
-    
+
 if __name__ == "__main__":
     main()

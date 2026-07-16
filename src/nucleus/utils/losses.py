@@ -137,3 +137,42 @@ class L1RelativeLoss(nn.Module):
         
         # Add each loss and take mean over batch dimensions.
         return (sdf_loss + temp_loss + velx_loss + vely_loss).mean()
+    
+def field_gradient_loss(pred_fields: torch.Tensor, target_fields: torch.Tensor) -> torch.Tensor:
+    r"""
+    L1 loss on the spatial gradients of the fields, for tensors shaped
+    (B, T, H, W, C). Penalizing slope mismatch rather than only point values
+    discourages the over-smoothing.
+    """
+    spatial_dims = (-3, -2)
+    pred_grad_y, pred_grad_x = torch.gradient(pred_fields, dim=spatial_dims)
+    target_grad_y, target_grad_x = torch.gradient(target_fields, dim=spatial_dims)
+    return (
+        torch.nn.functional.l1_loss(pred_grad_x, target_grad_x)
+        + torch.nn.functional.l1_loss(pred_grad_y, target_grad_y)
+    )
+
+def phase_bce_with_logits_loss(
+    input_phase, 
+    target_phase, 
+    pred_phase_logits, 
+    nucleation_weight,
+    vapor_weight
+):
+    # use higher weight for cells that should have phase change
+    # I.e., nucleation or bubble movement.
+    all_phase = torch.cat((input_phase, target_phase), dim=1)
+    next_phase = all_phase[:, 1:] 
+    prev_phase = all_phase[:, :-1]
+    phase_change_mask = (next_phase != prev_phase)[:, -target_phase.shape[1]:]
+    phase_change_weight = torch.where(phase_change_mask, nucleation_weight, 1.0)
+    
+    # vapor is only ~5% of the domain, so it should be up weighted
+    pos_weight = torch.tensor(vapor_weight, device=target_phase.device)
+    
+    return torch.nn.functional.binary_cross_entropy_with_logits(
+        pred_phase_logits, 
+        target_phase.to(torch.float32), 
+        weight=phase_change_weight,
+        pos_weight=pos_weight
+    )

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -A amowli_lab_gpu
 #SBATCH -p free-gpu
-#SBATCH --job-name=train-nucleus-exp
+#SBATCH --job-name=nucleus2-inference
 #SBATCH -o slurm-%x-%j.out
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
@@ -21,7 +21,7 @@ uv pip install -e .
 
 python scripts/inf.py \
     model_cfg=nucleus2/nucleus2_experiment \
-    checkpoint_path=/pub/afeeney/nucleus_logs/nucleus2_moe_poolboiling64_2026-06-22_53641953/checkpoints/last.ckpt \
-    data_cfg=poolboiling64 \
+    checkpoint_path=/pub/afeeney/nucleus_logs/nucleus2_moe_poolboiling512_2026-07-08_53968515/checkpoints/last.ckpt \
+    data_cfg=poolboiling \
     normalizer_cfg=standard \
     log_dir=/pub/afeeney/nucleus_logs/ \

@@ -10,17 +10,22 @@ import pytest
 
 from nucleus.run_forward_trajectory import run_test, TestResults
 from nucleus.models import get_model
-from nucleus.data.normalize import NoNormalizer
+from nucleus.data.normalize import get_normalizer
 
 FIELDS = ["dfun", "temperature", "velx", "vely"]
 
+@pytest.mark.parametrize("model_name", ["nucleus2_moe", "nucleus2_moe_divfree"])
 @pytest.mark.parametrize("trajectory_steps", [8, 16, 20, 24, 30, 31, 32])
 def test_run(
+    model_name,
     trajectory_steps
 ):
     with initialize(version_base=None, config_path="../config"):
-        cfg = compose(config_name="default")
-
+        cfg = compose(config_name="inference")
+    
+    cfg.start_time = 0
+    
+    cfg.model_cfg.name = model_name
     model_kwargs = OmegaConf.to_container(cfg.model_cfg.params, resolve=True)
     model_kwargs["input_fields"] = 4
     model_kwargs["output_fields"] = 4
@@ -38,7 +43,7 @@ def test_run(
         path = os.path.join(tmp, "sim.hdf5")
         with h5py.File(path, "w") as handle:
             for field in FIELDS:
-                handle.create_dataset(field, data=np.random.randn(100, 64, 64).astype(np.float32))
+                handle.create_dataset(field, data=np.random.randn(50, 64, 64).astype(np.float32))
         json_path = path.replace("hdf5", "json")
         
         with open(json_path, "w") as handle:
@@ -63,15 +68,15 @@ def test_run(
             json_params = json.dumps(params)
             handle.write(json_params)
     
-        normalizer = NoNormalizer()
+        normalizer = get_normalizer(cfg.normalizer_cfg)
 
-        #test_results: TestResults = run_test(
-        #    cfg, 
-        #    model, 
-        #    normalizer, 
-        #    test_file_path=path, 
-        #    trajectory_steps=trajectory_steps
-        #)
-        #assert test_results.preds.isfinite().all()
-        #assert test_results.targets.isfinite().all()
-        #assert test_results.preds.shape[1:] == test_results.targets.shape[1:]
+        test_results: TestResults = run_test(
+            cfg, 
+            model, 
+            normalizer, 
+            test_file_path=path, 
+            trajectory_steps=trajectory_steps
+        )
+        assert test_results.preds.isfinite().all()
+        assert test_results.targets.isfinite().all()
+        assert test_results.preds.shape[1:] == test_results.targets.shape[1:]
