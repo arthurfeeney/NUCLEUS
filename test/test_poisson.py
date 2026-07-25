@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 from nucleus.helmholtz import _grad_phi_faces, mac_divergence, potential_from_velocity
-from nucleus.poisson import (
+from nucleus.physics.poisson import (
     helmholtz_from_faces,
     reconstruct_velocity_from_helmholtz,
     curl_faces_from_nodes,
