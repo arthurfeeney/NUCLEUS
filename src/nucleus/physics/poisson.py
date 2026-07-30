@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+import numpy as np
 import torch
 
 # NOTE: these utilities hardcode boundaries for pool-boiling.
@@ -198,10 +199,21 @@ def stream_function_from_faces(facex, facey, dx, dy):
 def helmholtz_from_faces(facex, facey, dx, dy):
     """Staggered Helmholtz decomposition of a face-valued velocity field into the
     nodal streamfunction psi ``(..., H+1, W+1)`` (solenoidal part) and the
-    cell-centered potential phi ``(..., H, W)`` (dilatational part)."""
+    cell-centered potential phi ``(..., H, W)`` (dilatational part).
+
+    Accepts either torch tensors or numpy arrays. If given numpy arrays the
+    outputs are returned as numpy arrays, so numpy callers never see a tensor."""
+    return_numpy = isinstance(facex, np.ndarray)
+    if return_numpy:
+        facex = torch.from_numpy(facex)
+        facey = torch.from_numpy(facey)
+
     div = divergence_centers_from_faces(facex, facey, dx, dy)
     phi_centers = solve_poisson_neumann_dirichlet(div, dx, dy)
     psi_nodes = stream_function_from_faces(facex, facey, dx, dy)
+
+    if return_numpy:
+        return psi_nodes.numpy(), phi_centers.numpy()
     return psi_nodes, phi_centers
 
 
