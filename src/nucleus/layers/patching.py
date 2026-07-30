@@ -143,7 +143,38 @@ class LinearDebed(nn.Module):
         x = einops.rearrange(x, "b t h w (c p1 p2) -> b t (h p1) (w p2) c", p1=self.patch_size, p2=self.patch_size)
         assert x.shape[-3] == target_shape[0] and x.shape[-2] == target_shape[1]
         return x
-    
+
+
+class OverlappingPatchDebed(nn.Module):
+    def __init__(self, patch_size: int, out_channels: int, embed_dim: int, dtype: torch.dtype, overlap: int = None):
+        super().__init__()
+        self.patch_size = patch_size
+        self.out_channels = out_channels
+        self.overlap = patch_size // 2 if overlap is None else overlap
+        # ConvTranspose2d output = (in - 1) * stride - 2 * padding + kernel. With
+        # kernel = patch_size + 2 * overlap, padding = overlap, stride = patch_size,
+        # this restores exactly (in * patch_size), matching LinearDebed's shape.
+        self.conv_transpose = nn.ConvTranspose2d(
+            embed_dim,
+            out_channels,
+            kernel_size=patch_size + 2 * self.overlap,
+            stride=patch_size,
+            padding=self.overlap,
+            bias=False,
+            dtype=dtype,
+        )
+
+    def forward(self, x: torch.Tensor, target_shape: Tuple[int, int]) -> torch.Tensor:
+        leading = x.shape[:-3]
+        patch_h, patch_w, channels = x.shape[-3], x.shape[-2], x.shape[-1]
+        x = x.reshape(-1, patch_h, patch_w, channels).permute(0, 3, 1, 2)
+        x = self.conv_transpose(x)
+        out_h, out_w = x.shape[-2], x.shape[-1]
+        x = x.permute(0, 2, 3, 1).reshape(*leading, out_h, out_w, self.out_channels)
+        assert x.shape[-3] == target_shape[0] and x.shape[-2] == target_shape[1]
+        return x
+
+
 def _local_fourier_coords(
     h: int, w: int, patch_shape: Tuple[int, int], num_freq_bands: int,
     device: torch.device, dtype: torch.dtype
