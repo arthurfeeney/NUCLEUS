@@ -24,6 +24,13 @@ class NormalizerConstants:
     vely_mean: float
     vely_std: float
 
+    # psi and phi are components of Helmholtz decomp. Only the divfree normalizer
+    # sets these; standard/phase configs omit them and leave them None.
+    psi_mean: Optional[float] = None
+    psi_std: Optional[float] = None
+    phi_mean: Optional[float] = None
+    phi_std: Optional[float] = None
+
     numeric_sim_params_min: Optional[dict] = None
     numeric_sim_params_max: Optional[dict] = None
 
@@ -43,6 +50,11 @@ class NormalizerConstants:
             f"vely_mean: {self.vely_mean}",
             f"vely_std: {self.vely_std}",
         ]
+
+        if self.psi_mean is not None: sim_params_yaml.append(f"psi_mean: {self.psi_mean}")
+        if self.psi_std is not None: sim_params_yaml.append(f"psi_std: {self.psi_std}")
+        if self.phi_mean is not None: sim_params_yaml.append(f"phi_mean: {self.phi_mean}")
+        if self.phi_std is not None: sim_params_yaml.append(f"phi_std: {self.phi_std}")
 
         fmin = yaml.dump({"sim_params_min": self.numeric_sim_params_min}, default_flow_style=False) if self.numeric_sim_params_min is not None else None
         fmax = yaml.dump({"sim_params_max": self.numeric_sim_params_max}, default_flow_style=False) if self.numeric_sim_params_max is not None else None
@@ -119,6 +131,7 @@ class Normalizer:
             dict_normalize_helper(sim_params_dict, minmax_normalize, self.constants.numeric_sim_params_min, self.constants.numeric_sim_params_max)
             for sim_params_dict in sim_params_dicts
         ]
+
     def unnormalize_params(self, sim_params_dicts: List[dict]) -> List[dict]:
         return [
             dict_normalize_helper(sim_params_dict, minmax_unnormalize, self.constants.numeric_sim_params_min, self.constants.numeric_sim_params_max)
@@ -148,6 +161,18 @@ class Normalizer:
 
     def unnormalize_sdf(self, sdf: torch.Tensor) -> torch.Tensor:
         return sdf * self.constants.sdf_std + self.constants.sdf_mean
+
+    def normalize_psi(self, psi: torch.Tensor) -> torch.Tensor:
+        return (psi - self.constants.psi_mean) / self.constants.psi_std
+
+    def unnormalize_psi(self, psi: torch.Tensor) -> torch.Tensor:
+        return psi * self.constants.psi_std + self.constants.psi_mean
+
+    def normalize_phi(self, phi: torch.Tensor) -> torch.Tensor:
+        return (phi - self.constants.phi_mean) / self.constants.phi_std
+
+    def unnormalize_phi(self, phi: torch.Tensor) -> torch.Tensor:
+        return phi * self.constants.phi_std + self.constants.phi_mean
 
     def normalize(self, data: torch.Tensor, bulk_temp: torch.Tensor, layout: str = "t h w c") -> torch.Tensor:
         assert data.dim() >= 4, "Data must be at least 4D (..., T, H, W, C)"
@@ -218,9 +243,11 @@ class PhaseNormalizer(StandardNormalizer):
 
 class DivFreeNormalizer(StandardNormalizer):
     r"""
-    normalizes velx and vely with a shared stdt scalar. This allows a model
-    producing divergence free outputs that can be divergence free regardless of 
-    whether the data is normalized or not.
+    1. normalizes velx and vely with a shared std scalar. This allows a model
+       producing divergence free outputs that can be divergence free regardless of
+       whether the data is normalized or not.
+    2. The velocities are already nearly zero-mean, so we just don't bother mean shifting.
+    3. Normalizes the potential function psi and phi for vel = curl(psi) + grad(phi).
     """
     def __init__(self, constants: NormalizerConstants):
         super().__init__(constants)
@@ -229,17 +256,50 @@ class DivFreeNormalizer(StandardNormalizer):
         # This one keeps the combined velocity roughly unit-variance.
         self.vel_std = math.sqrt((constants.velx_std ** 2 + constants.vely_std ** 2) / 2)
 
+    def normalize(self, data: torch.Tensor, bulk_temp: torch.Tensor, layout: str = "t h w c") -> torch.Tensor:
+        assert data.dim() >= 4, "Data must be at least 4D (..., T, H, W, C)"
+        assert data.shape[-1] == 6, "Data must have six channels (sdf, temp, velx, vely, psi, phi)"
+        assert isinstance(bulk_temp, (int, float)) or data.shape[:-4] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
+        # Clone once to avoid modifying the input, then normalize each channel
+        # in-place to avoid the 4 intermediate tensors that torch.stack creates.
+        result = data.clone()
+        result[..., 0] = self.normalize_sdf(result[..., 0])
+        result[..., 1] = self.normalize_temp(result[..., 1], bulk_temp)
+        result[..., 2] = self.normalize_velx(result[..., 2])
+        result[..., 3] = self.normalize_vely(result[..., 3])
+        result[..., 4] = self.normalize_psi(result[..., 4])
+        result[..., 5] = self.normalize_phi(result[..., 5])
+        return result
+
+    def unnormalize(self, data: torch.Tensor, bulk_temp: torch.Tensor, layout: str = "t h w c") -> torch.Tensor:
+        assert data.dim() >= 4, "Data must be at least 4D (..., T, H, W, C)"
+        if layout != "t h w c":
+            data = convert_layout(data, target_layout="t h w c", source_layout=layout)
+        assert data.shape[-1] == 6, "Data must have 6 channels (sdf, temp, velx, vely, psi, phi)"
+        assert isinstance(bulk_temp, (int, float)) or data.shape[:-4] == bulk_temp.shape, "Bulk temperature must match the batch dimensions of the data"
+        result = torch.stack([
+            self.unnormalize_sdf(data[..., 0]),
+            self.unnormalize_temp(data[..., 1], bulk_temp),
+            self.unnormalize_velx(data[..., 2]),
+            self.unnormalize_vely(data[..., 3]),
+            self.unnormalize_psi(data[..., 4]),
+            self.unnormalize_phi(data[..., 5]),
+        ], dim=-1)
+        if layout != "t h w c":
+            result = convert_layout(result, target_layout=layout, source_layout="t h w c")
+        return result
+
     def normalize_velx(self, vel: torch.Tensor) -> torch.Tensor:
-        return (vel - self.constants.velx_mean) / self.vel_std
+        return vel / self.vel_std
 
     def unnormalize_velx(self, vel: torch.Tensor) -> torch.Tensor:
-        return vel * self.vel_std + self.constants.velx_mean
+        return vel * self.vel_std
 
     def normalize_vely(self, vel: torch.Tensor) -> torch.Tensor:
-        return (vel - self.constants.vely_mean) / self.vel_std
+        return vel / self.vel_std
 
     def unnormalize_vely(self, vel: torch.Tensor) -> torch.Tensor:
-        return vel * self.vel_std + self.constants.vely_mean
+        return vel * self.vel_std
 
 class NoNormalizer(Normalizer):
     def __init__(self):
@@ -269,6 +329,10 @@ def get_normalizer(normalizer_cfg: dict) -> Normalizer:
         velx_std=normalizer_cfg["velx_std"],
         vely_mean=normalizer_cfg["vely_mean"],
         vely_std=normalizer_cfg["vely_std"],
+        psi_mean=normalizer_cfg.get("psi_mean"),
+        psi_std=normalizer_cfg.get("psi_std"),
+        phi_mean=normalizer_cfg.get("phi_mean"),
+        phi_std=normalizer_cfg.get("phi_std"),
         numeric_sim_params_min=normalizer_cfg["sim_params_min"],
         numeric_sim_params_max=normalizer_cfg["sim_params_max"],
     )
@@ -284,35 +348,43 @@ def get_normalizer(normalizer_cfg: dict) -> Normalizer:
         raise ValueError(f"Unknown normalizer: {normalizer_cfg['name']}")
 
 class RunningVariance:
-    def __init__(self, bins: int, range: tuple[float, float]):
-        self.hist = np.array([0]*(bins - 1), dtype=np.int64)
-        self.range = range
-        self.bins = np.linspace(range[0], range[1], bins, dtype=np.float64)
+    def __init__(self):
         self.count = 0
+        self._mean = 0.0
+        self._m2 = 0.0
 
     def update(self, value: np.ndarray):
-        numel = value.size
-        if numel == 0:
+        value = np.asarray(value, dtype=np.float64).ravel()
+        batch_count = value.size
+        if batch_count == 0:
             return
-        self.hist += np.histogram(value.astype(np.int64), bins=self.bins, range=self.range)[0]
-        self.count += numel
+        batch_mean = value.mean()
+        batch_m2 = ((value - batch_mean) ** 2).sum()
+
+        # Chan's parallel merge of the running aggregate with this batch. Update the
+        # mean and M2 before the count, since M2 needs the pre-merge count.
+        total = self.count + batch_count
+        delta = batch_mean - self._mean
+        self._mean += delta * batch_count / total
+        self._m2 += batch_m2 + delta * delta * self.count * batch_count / total
+        self.count = total
 
     def var(self) -> float:
-        bin_mid_points = (self.bins[1:] + self.bins[:-1]) / 2
-        mean = np.average(bin_mid_points, weights=self.hist)
-        return np.average((bin_mid_points - mean) ** 2, weights=self.hist).item()
+        if self.count == 0:
+            return 0.0
+        return float(self._m2 / self.count)
 
     def std(self) -> float:
         return math.sqrt(self.var())
 
     def mean(self) -> float:
-        bin_mid_points = (self.bins[1:] + self.bins[:-1]) / 2
-        return np.average(bin_mid_points, weights=self.hist).item()
+        return float(self._mean)
 
 def nested_dict_minmax(dict1: dict, dict2: dict, op: Callable) -> dict:
     r"""
     Applies a reduction operation `op` to two nested dictionaries (i.e., potentially a dict of dicts). This assumes that the
-    dictionaries have identical structure. This only applies to numeric values, so strings are excluded from the output.
+    dictionaries have identical structure.
+    NOTE: This only applies to numeric values, so strings are excluded from the output.
     """
     out_dict = {}
     for key in dict1.keys():
@@ -338,6 +410,8 @@ def main(cfg: DictConfig):
     import h5py
     import json
 
+    from nucleus.physics.poisson import helmholtz_from_faces
+
     absmax_temp = float("-inf")
     max_domain_size = float("-inf")
     sim_params_min = None
@@ -346,51 +420,40 @@ def main(cfg: DictConfig):
     start_time = 300
     step_size = 100
 
-    # Initial loop to get the limits for the running variances.
-    max_sdf = float("-inf")
-    max_temp = float("-inf")
-    max_velx = float("-inf")
-    max_vely = float("-inf")
+    sdf_running_variance = RunningVariance()
+    temp_running_variance = RunningVariance()
+    velx_running_variance = RunningVariance()
+    vely_running_variance = RunningVariance()
+    helmholtz_psi_variance = RunningVariance()
+    helmholtz_phi_variance = RunningVariance()
+
     for train_path in cfg.data_cfg.train_paths:
         with h5py.File(train_path, "r") as f:
+            velface = "velfacex" in f.keys()
+            VELX = "velfacex" if velface else "velx"
+            VELY = "velfacey" if velface else "vely"
             sdf = f["dfun"][start_time::step_size]
             temp = f["temperature"][start_time::step_size]
-            velx = f["velx"][start_time::step_size]
-            vely = f["vely"][start_time::step_size]
-        with open(train_path.replace(".hdf5", ".json"), "r") as f:
-            sim_params_dict = json.load(f)
-        max_sdf = max(max_sdf, np.abs(sdf).max().item())
-        max_temp = max(max_temp, np.abs(temp).max().item() - sim_params_dict["bulk_temp"])
-        max_velx = max(max_velx, np.abs(velx).max().item())
-        max_vely = max(max_vely, np.abs(vely).max().item())
-
-    sdf_running_variance = RunningVariance(bins=1000, range=(-max_sdf, max_sdf))
-    temp_running_variance = RunningVariance(bins=1000, range=(-max_temp, max_temp))
-    velx_running_variance = RunningVariance(bins=1000, range=(-max_velx, max_velx))
-    vely_running_variance = RunningVariance(bins=1000, range=(-max_vely, max_vely))
-
-    # Loop to get the normalization constants for the SDF, temperature, and velocities.
-    for train_path in cfg.data_cfg.train_paths:
-        #print(train_path)
-        with h5py.File(train_path, "r") as f:
-            sdf = f["dfun"][start_time::step_size]
-            temp = f["temperature"][start_time::step_size]
-            velx = f["velx"][start_time::step_size]
-            vely = f["vely"][start_time::step_size]
+            velx = f[VELX][start_time::step_size]
+            vely = f[VELY][start_time::step_size]
         with open(train_path.replace(".hdf5", ".json"), "r") as f:
             sim_params_dict = json.load(f)
 
         x_size = sim_params_dict["x_max"] - sim_params_dict["x_min"]
         y_size = sim_params_dict["y_max"] - sim_params_dict["y_min"]
-        max_domain_size = max(x_size, y_size)
+        max_domain_size = max(max_domain_size, x_size, y_size)
 
         absmax_temp = max(absmax_temp, np.abs(temp).max() - sim_params_dict["bulk_temp"])
-        max_domain_size = max(max_domain_size, max_domain_size)
 
         sdf_running_variance.update(sdf)
         temp_running_variance.update(temp - sim_params_dict["bulk_temp"])
         velx_running_variance.update(velx)
         vely_running_variance.update(vely)
+
+        if velface:
+            psi_nodes, phi_centers = helmholtz_from_faces(velx, vely, 1/32, 1/32)
+            helmholtz_psi_variance.update(psi_nodes)
+            helmholtz_phi_variance.update(phi_centers)
 
         if sim_params_min is None:
             sim_params_min = sim_params_dict
@@ -412,6 +475,10 @@ def main(cfg: DictConfig):
         velx_std=velx_running_variance.std(),
         vely_mean=vely_running_variance.mean(),
         vely_std=vely_running_variance.std(),
+        psi_mean=helmholtz_psi_variance.mean() if helmholtz_psi_variance.count > 0 else None,
+        psi_std=helmholtz_psi_variance.std() if helmholtz_psi_variance.count > 0 else None,
+        phi_mean=helmholtz_phi_variance.mean() if helmholtz_phi_variance.count > 0 else None,
+        phi_std=helmholtz_phi_variance.std() if helmholtz_phi_variance.count > 0 else None,
         numeric_sim_params_min=sim_params_min,
         numeric_sim_params_max=sim_params_max,
     )
