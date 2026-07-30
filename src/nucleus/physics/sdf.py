@@ -113,7 +113,7 @@ def constant_normal_extrapolation(
     dx: float,
     dy: float,
     tolerance: float = 1e-6,
-    max_iterations: int = 1000,
+    max_iterations: int = 5,
 ) -> torch.Tensor:
     """Constant extrapolation of ``field`` along the interface normals into
     ``fill_mask``, iterated to steady state.
@@ -154,14 +154,11 @@ def constant_normal_extrapolation(
     Returns:
         Extrapolated field, shape ``(..., H, W)``.
     """
-    time_step = 0.4 * min(dx, dy)
+    time_step = 0.5 * min(dx, dy)
     fill = fill_mask.to(field.dtype)
-    threshold = tolerance * field.abs().amax().clamp_min(1e-30)
     extrapolated = field.clone()
     for _ in range(max_iterations):
         normal_gradient = _upwind_normal_gradient(extrapolated, normal_x, normal_y, dx, dy)
         step = time_step * fill * normal_gradient
         extrapolated = extrapolated - step
-        if step.abs().amax() <= threshold:
-            break
     return extrapolated

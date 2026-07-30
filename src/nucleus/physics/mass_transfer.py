@@ -13,13 +13,14 @@ from nucleus.physics.sdf import (
     smoothed_delta,
 )
 from nucleus.physics.temp_grad import vapor_temp_grad, liquid_temp_grad
+from nucleus.physics.extrapolate_flux import extrapolate_phase_flux
 
 DEFAULT_BAND_CELLS = 5
 
 
 def interface_heatflux(
     temp: torch.Tensor, sdf: torch.Tensor, sat_temp, dx: float, dy: float,
-    band_cells: int = DEFAULT_BAND_CELLS, wall_temp=None, eps: float = 1e-12,
+    band_cells: int = DEFAULT_BAND_CELLS, wall_temp=None, eps: float = 1e-13,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Normal temperature gradient ``grad(T) . n`` on each side of the interface.
 
@@ -67,26 +68,25 @@ def interface_heatflux(
         outside it, so the two overlap on the band and can be subtracted there.
     """
     normal_x, normal_y = interface_normals(sdf, dx, dy, eps)
-
+    
     liquid_grad_x, liquid_grad_y = liquid_temp_grad(temp, sdf, sat_temp, dx, dy, wall_temp, eps)
-    liquid_normal_gradient = liquid_grad_x * normal_x + liquid_grad_y * normal_y
+    liquid_heat_flux = liquid_grad_x * normal_x + liquid_grad_y * normal_y
 
     vapor_grad_x, vapor_grad_y = vapor_temp_grad(temp, sdf, sat_temp, dx, dy, wall_temp, eps)
-    vapor_normal_gradient = vapor_grad_x * normal_x + vapor_grad_y * normal_y
+    vapor_heat_flux = vapor_grad_x * normal_x + vapor_grad_y * normal_y
+        
+    ext_liquid_heat_flux, ext_vapor_heat_flux = extrapolate_phase_flux(
+        liquid_heat_flux, vapor_heat_flux, sdf, normal_x, normal_y, dx, dy)
 
-    # Spread each one-sided gradient into the opposite phase along the normals so
-    # both are defined on a common band; the flux follows the local gradient across
-    # the band (matching how Flash-X spreads its source), and masking back to the
-    # band leaves conducted exactly zero outside it.
-    band = band_mask(sdf, band_cells * max(dx, dy))
-    liquid_side = constant_normal_extrapolation(
-        liquid_normal_gradient, vapor_mask(sdf) & band, normal_x, normal_y, dx, dy
-    )
-    vapor_side = constant_normal_extrapolation(
-        vapor_normal_gradient, liquid_mask(sdf) & band, -normal_x, -normal_y, dx, dy
-    )
-    return liquid_side * band, vapor_side * band
+    lmask = liquid_mask(sdf).to(temp.dtype)
+    vmask = vapor_mask(sdf).to(temp.dtype)
 
+    # mask of the cells where some extrapolation across phases occurred.
+    extrapolated_cells = (
+        (lmask * ext_vapor_heat_flux != 0) | (vmask * ext_liquid_heat_flux != 0)
+    ).to(temp.dtype)
+    
+    return ext_liquid_heat_flux * extrapolated_cells, ext_vapor_heat_flux * extrapolated_cells
 
 def mass_transfer(
     temp: torch.Tensor,
@@ -103,36 +103,7 @@ def mass_transfer(
     wall_temp=None,
     eps: float = 1e-12,
 ) -> torch.Tensor:
-    """Interfacial mass flux from the Stefan condition, non-dimensionalized.
-
-    Energy balance at the interface: the heat conducted *to* the interface from
-    both phases is consumed as latent heat. With ``q = -k grad(T)``, the heat each
-    phase delivers through the interface is ``-k_i dT/dn_i`` along that phase's
-    outward normal, so summing the two sides (from ``interface_heatflux``) gives
-
-        mdot = St (k_l dT/dn_l - k_v dT/dn_v) / (Re Pr)
-
-    The liquid conductivity is the reference (``k_l = 1``) and
-    ``thermal_conductivity`` is the vapor's value relative to it (the ``thcogas``
-    sim parameter). ``Re Pr`` is the Peclet number, and ``St = cp dT / h_fg`` is
-    sensible over latent heat -- so a larger Stefan number (weaker latent heat)
-    converts the same temperature gradient into *more* mass transfer, and
-    ``mdot -> 0`` as the latent heat grows.
-
-    Sign: **negative** means evaporation (liquid to vapor), positive means
-    condensation. With ``n`` pointing from liquid to vapor, a superheated liquid
-    cools toward the interface, so ``dT/dn_l < 0`` and, with no leading minus on
-    the expression above, ``mdot < 0`` for evaporation.
-
-    Banding: the two one-sided gradients are each constant-extrapolated across the
-    band (in ``interface_heatflux``), so the jump ``k_l dT/dn_l - k_v dT/dn_v`` can
-    be formed cell-wise on the band. The jump is a *surface* quantity, so it is
-    tapered by an exponential ``exp(-|sdf| / (taper_decay_cells * dx))`` -- the
-    ``|grad H|`` delta kernel that spreads a surface source into a volume -- giving
-    the decaying profile Flash-X's massflux has (which decays ~0.6 per cell). The
-    taper is a scalar, so tapering the jump equals tapering each heat flux and
-    subtracting.
-
+    """
     Args:
         temp: cell-centered temperature, shape ``(..., H, W)``.
         sdf: cell-centered signed distance, shape ``(..., H, W)``. sdf < 0 is liquid,
@@ -165,14 +136,7 @@ def mass_transfer(
         temp, sdf, sat_temp, dx, dy, band_cells, wall_temp, eps
     )
     conducted = liquid_heatflux - thermal_conductivity * vapor_heatflux
-
-    # The jump is a surface quantity; taper it across the band (the |grad H| delta
-    # kernel that spreads a surface source into a volume). The Flash-X massflux
-    # decays exponentially from the interface (~0.6 per cell), so use an exponential
-    # taper; conducted is already zero outside the band, so no cutoff is needed here.
-    decay_length = taper_decay_cells * max(dx, dy)
-    taper = 1.0
-    return stefan / (reynolds * prandtl) * conducted * taper
+    return stefan / (reynolds * prandtl) * conducted
 
 
 def continuity(
@@ -191,18 +155,14 @@ def continuity(
     wall_temp=None,
     eps: float = 1e-12,
 ) -> torch.Tensor:
-    """Mass flux scaled by the normal density jump across the interface.
+    """Velocity-divergence source from phase change: ``mdot * (n . grad(rho))``.
 
-    This is the volumetric source that the phase-change mass flux imposes on the
-    velocity divergence: ``div(u) = mdot (1/rho_v - 1/rho_l) delta_interface``. The
-    specific-volume jump ``1/rho_v - 1/rho_l`` is a scalar (liquid density is the
-    reference, ``rho_l = 1``), and the interface delta is regularized over the same
-    ``band_cells``-wide band the flux is spread on (``smoothed_delta``), so the
-    result occupies a band rather than a single cell.
-
-    Using ``grad(rho) . n`` of the sharp density step instead would confine the
-    source to the one cell where the step lives, collapsing the band no matter how
-    wide ``mdot`` is.
+    Forms the mass-flux vector ``mdot * n`` (``n`` from ``interface_normals``,
+    pointing liquid to vapor) and dots it with ``grad(rho)``. ``rho`` here is the
+    cell-centered specific volume (liquid ``1.0``, vapor ``1/rhogas``) **smeared
+    over ~3 cells** with a smoothed Heaviside of the SDF, so ``grad(rho)`` (a
+    centered difference) spreads across a band rather than a single-cell spike. The
+    result should match the divergence of the velocity field.
 
     Args:
         temp: cell-centered temperature, shape ``(..., H, W)``.
@@ -225,15 +185,24 @@ def continuity(
             gradients.
 
     Returns:
-        Velocity-divergence source ``mdot (1/rho_v - 1/rho_l) delta``, shape
-        ``(..., H, W)``, nonzero on the ``band_cells``-wide interface band.
+        Velocity-divergence source ``mdot * (n . grad(rho))``, shape ``(..., H, W)``,
+        nonzero on the cells where ``grad(rho)`` is (straddling the interface).
     """
     mdot = mass_transfer(
         temp, sdf, sat_temp, dx, dy, stefan, reynolds, prandtl, thermal_conductivity,
         band_cells=band_cells, taper_decay_cells=taper_decay_cells, wall_temp=wall_temp, eps=eps,
     )
 
-    # Specific-volume jump 1/rho_v - 1/rho_l across the interface (rho_l = 1).
-    specific_volume_jump = 1.0 / rhogas - 1.0
-    band_width = band_cells * max(dx, dy)
-    return -mdot * specific_volume_jump * smoothed_delta(sdf, band_width)
+    normal_x, normal_y = interface_normals(sdf, dx, dy, eps)
+
+    # Smear the density step over ~3 cells with a smoothed Heaviside of the SDF, so
+    # grad(rho) spreads across a band instead of a single-cell spike. Liquid value
+    # 1.0, vapor value 1/rhogas (heaviside runs 0 -> 1 from liquid to vapor).
+    smear_cells = 5.0
+    half_width = 0.5 * smear_cells * max(dx, dy)   # transition spans smear_cells cells
+    phi = (sdf / half_width).clamp(-1.0, 1.0)
+    heaviside = 0.5 * (1.0 + phi + torch.sin(torch.pi * phi) / torch.pi)
+    rho = 1.0 + (1.0 / rhogas - 1.0) * heaviside
+    grad_rho_y, grad_rho_x = torch.gradient(rho, spacing=(dy, dx), dim=(-2, -1), edge_order=1)
+
+    return - mdot * (normal_x * grad_rho_x + normal_y * grad_rho_y)
