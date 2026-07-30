@@ -70,8 +70,8 @@ def _ghost_fluid_gradient(
         # theta: sub-cell distance from the center cell to the interface, in cell
         # fractions. clamp keeps the ghost finite when the interface sits on the
         # center cell (sdf ~ 0).
-        theta = (center_sdf.abs() / (center_sdf.abs() + neighbor_sdf.abs()).clamp_min(eps)).clamp_min(eps)
-        ghost = center_temp + (sat_temp - center_temp) / theta
+        theta = (center_sdf.abs() / (center_sdf.abs() + neighbor_sdf.abs() + eps))#.clamp_min(eps)).clamp_min(eps)
+        ghost = center_temp + (sat_temp - center_temp) / (theta + eps)
         return torch.where(across, ghost, neighbor_temp)
 
     right = effective(padded_temp[..., 1:-1, 2:], padded_sdf[..., 1:-1, 2:])

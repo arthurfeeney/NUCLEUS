@@ -244,9 +244,9 @@ def diagnose_mass_transfer(computed_mdot, data_massflux, sdf=None, spacing=None)
     print("=================================\n")
 
 
-def plot_mass_transfer(temp, sdf, mass_flux, sim_params, save_path, band_cells, use_wall_bc=True):
-    """The computed interfacial mass-transfer field, the Flash-X massflux, and
-    their difference."""
+def plot_mass_transfer(temp, sdf, mass_flux, velfacex, velfacey, sim_params, save_path, band_cells, use_wall_bc=True):
+    """The computed interfacial mass-transfer field, the velocity divergence it
+    should match, the Flash-X massflux, and the difference to Flash-X."""
     # The mass-transfer expression is non-dimensional, so the temperature and the
     # saturation temperature must be on the same (bulk -> 0, heater -> 1) scale.
     bulk_temp = sim_params["bulk_temp"]
@@ -257,8 +257,8 @@ def plot_mass_transfer(temp, sdf, mass_flux, sim_params, save_path, band_cells, 
     wall_temp = non_dimensionalize_temp(heater_temp, bulk_temp, heater_temp) if use_wall_bc else None
 
     mdot = mass_transfer(
-        temp, sdf,
-        sat_temp=sat_temp,
+        temp.to(torch.float64), sdf.to(torch.float64),
+        sat_temp=float(sat_temp),
         dx=DX, dy=DY,
         stefan=sim_params["stefan"],
         reynolds=1.0 / sim_params["inv_reynolds"],
@@ -270,26 +270,33 @@ def plot_mass_transfer(temp, sdf, mass_flux, sim_params, save_path, band_cells, 
     total = mdot.sum() * DX * DY
     mass_flux = mass_flux.numpy()
     difference = mdot - mass_flux
+    # Velocity divergence (exact MAC divergence from the face velocities): the
+    # phase-change source should show up here, so mass transfer ~ div(u).
+    divergence = divergence_centers_from_faces(
+        velfacex.to(torch.float64), velfacey.to(torch.float64), DX, DY
+    ).numpy()
     print(f"net mass transfer (sum * dx * dy): {total:.4e}   (negative => net evaporation)")
+    div_ratio = mdot.sum() / (divergence.sum() + 1e-30)
+    print(f"mass transfer vs velocity divergence: net ratio={div_ratio:+.3e}  "
+          f"correlation={_zero_mean_correlation(mdot, divergence):+.3f}")
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5), sharex=True, sharey=True)
 
     mdot_img = axes[0].imshow(mdot, origin="lower", cmap="RdBu_r", norm=_symlog_norm(mdot))
     axes[0].set_title("mass transfer (blue: evap, red: cond)")
     fig.colorbar(mdot_img, ax=axes[0], fraction=0.046)
 
-    mass_flux_img = axes[1].imshow(mass_flux, origin="lower", cmap="RdBu_r", norm=_symlog_norm(mass_flux))
-    axes[1].set_title("Flash-X mass transfer (blue: evap, red: cond)")
-    fig.colorbar(mass_flux_img, ax=axes[1], fraction=0.046)
+    divergence_img = axes[1].imshow(divergence, origin="lower", cmap="RdBu_r", norm=_symlog_norm(divergence))
+    axes[1].set_title("velocity divergence  div(u)")
+    fig.colorbar(divergence_img, ax=axes[1], fraction=0.046)
 
-    # absolute difference is non-negative -> plain log scale with a per-panel floor.
-    difference_max = max(float(difference.max()), 1e-30)
-    difference_img = axes[2].imshow(
-        difference, origin="lower", cmap="RdBu",
-        norm=_symlog_norm(difference)#(vmin=-abs(difference_max), vmax=abs(difference_max), clip=True),
-    )
-    axes[2].set_title("|computed − Flash-X|")
-    fig.colorbar(difference_img, ax=axes[2], fraction=0.046)
+    mass_flux_img = axes[2].imshow(mass_flux, origin="lower", cmap="RdBu_r", norm=_symlog_norm(mass_flux))
+    axes[2].set_title("Flash-X mass transfer (blue: evap, red: cond)")
+    fig.colorbar(mass_flux_img, ax=axes[2], fraction=0.046)
+
+    difference_img = axes[3].imshow(difference, origin="lower", cmap="RdBu", norm=_symlog_norm(difference))
+    axes[3].set_title("computed − Flash-X")
+    fig.colorbar(difference_img, ax=axes[3], fraction=0.046)
 
     diagnose_mass_transfer(mdot, mass_flux, sdf=sdf.numpy(), spacing=DX)
 
@@ -384,7 +391,7 @@ def main():
     use_wall_bc = not args.no_wall_bc
 
     plot_helmholtz(velfacex, velfacey, sdf, output / "helmholtz.png")
-    plot_mass_transfer(temp, sdf, mass_flux, sim_params, output / "mass_transfer.png", args.band_cells, use_wall_bc)
+    plot_mass_transfer(temp, sdf, mass_flux, velfacex, velfacey, sim_params, output / "mass_transfer.png", args.band_cells, use_wall_bc)
     plot_continuity_vs_divergence(
         velfacex, velfacey, temp, sdf, sim_params, output / "continuity_vs_divergence.png",
         args.band_cells, use_wall_bc,
