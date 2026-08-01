@@ -163,17 +163,24 @@ def nucleation_event_masks(prev_phase, target_phase, pred_phase):
     return ground_truth_nucleation, predicted_nucleation
 
 def interface_mask(sdf):
-    assert sdf.dim() == 4, "SDF must be of shape (B, T, H, W)"
-    interface = torch.zeros_like(sdf, dtype=torch.bool, device="cpu")
-    [B, T, rows, cols] = sdf.shape
-    for b in range(B):
-        for t in range(T):
-            signs = np.sign(sdf[b, t])
-            interface[b, t, :-1, :] |= signs[:-1, :] != signs[1:, :]
-            interface[b, t, 1:, :] |= signs[1:, :] != signs[:-1, :]
-            interface[b, t, :, :-1] |= signs[:, :-1] != signs[:, 1:]
-            interface[b, t, :, 1:] |= signs[:, 1:] != signs[:, :-1]
-    return interface.to(sdf.device)
+    r"""
+    Cells adjacent to the zero level set: a cell is marked when any of its four
+    neighbors lies in the other phase (the sign of the SDF differs). Works for any
+    shape (..., H, W) and stays on the input's device.
+    """
+    assert sdf.dim() >= 2, "SDF must be of shape (..., H, W)"
+    signs = torch.sign(sdf)
+    interface = torch.zeros_like(sdf, dtype=torch.bool)
+
+    # Inequality is symmetric, so one comparison per axis marks both neighbors.
+    rows_differ = signs[..., :-1, :] != signs[..., 1:, :]
+    interface[..., :-1, :] |= rows_differ
+    interface[..., 1:, :] |= rows_differ
+
+    cols_differ = signs[..., :, :-1] != signs[..., :, 1:]
+    interface[..., :, :-1] |= cols_differ
+    interface[..., :, 1:] |= cols_differ
+    return interface
 
 def interface_velocity(velx, vely, sdf):
     mask = interface_mask(sdf)
