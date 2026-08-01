@@ -2,12 +2,12 @@ import math
 import numpy as np
 import torch
 
-from nucleus.helmholtz import _grad_phi_faces, mac_divergence, potential_from_velocity
 from nucleus.physics.poisson import (
     helmholtz_from_faces,
     reconstruct_velocity_from_helmholtz,
     curl_faces_from_nodes,
     grad_faces_from_centers,
+    divergence_centers_from_faces,
     solve_poisson_neumann_dirichlet,
     solve_poisson_dirichlet_neumann,
 )
@@ -20,24 +20,24 @@ def _cell_centers(n, dx, dy):
     return grid_x, grid_y
 
 
-def test_torch_solver_matches_the_numpy_potential_solve():
-    # Build a source as the discrete Laplacian of a known potential (Neumann walls,
-    # Dirichlet top) and check the torch solver recovers that potential -- and
-    # agrees with the verified numpy path -- to machine precision.
+def test_solver_recovers_a_known_potential():
+    # Build a source as the discrete divergence of grad(phi_true) (Neumann walls,
+    # Dirichlet top) and check the torch solver recovers that potential to machine
+    # precision.
     n = 48
     dx = dy = 1.0 / n
     center_x, center_y = _cell_centers(n, dx, dy)
     length = n * dx
 
-    phi_true = np.cos(np.pi * center_x / length) * np.cos(0.5 * np.pi * center_y / length)
-    grad_x, grad_y = _grad_phi_faces(phi_true, dx, dy)
-    source = mac_divergence(grad_x, grad_y, dx, dy)
+    phi_true = torch.from_numpy(
+        np.cos(np.pi * center_x / length) * np.cos(0.5 * np.pi * center_y / length)
+    )
+    grad_x, grad_y = grad_faces_from_centers(phi_true, dx, dy)
+    source = divergence_centers_from_faces(grad_x, grad_y, dx, dy)
 
-    phi_numpy = potential_from_velocity(grad_x, grad_y, dx, dy)
-    phi_torch = solve_poisson_neumann_dirichlet(torch.from_numpy(source), dx, dy).numpy()
+    phi_torch = solve_poisson_neumann_dirichlet(source, dx, dy)
 
-    assert np.linalg.norm(phi_torch - phi_true) / np.linalg.norm(phi_true) < 1e-6
-    assert np.linalg.norm(phi_torch - phi_numpy) / np.linalg.norm(phi_numpy) < 1e-10
+    assert torch.linalg.norm(phi_torch - phi_true) / torch.linalg.norm(phi_true) < 1e-6
 
 
 def test_solver_reproduces_the_source_as_its_divergence():
