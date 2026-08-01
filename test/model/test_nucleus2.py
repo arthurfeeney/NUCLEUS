@@ -3,24 +3,15 @@ import torch
 import pytest
 
 from nucleus.models.nucleus2_moe import Nucleus2MoE, Nucleus2MoEConfig
-from nucleus.models.nucleus2_moe_divfree import Nucleus2MoEDivFree, Nucleus2MoEDivFreeConfig
 from nucleus.data.batching import CollatedBatch
 from nucleus.data.normalize import NoNormalizer
 
 
-# Exercise both the unconstrained model and the divergence-free variant. They
-# share the MoEBase interface (forward(batch) -> step(input, sim_params)); the
-# div-free model only differs in how it reconstructs the velocity fields.
-MODELS = [
-    (Nucleus2MoE, Nucleus2MoEConfig),
-    (Nucleus2MoEDivFree, Nucleus2MoEDivFreeConfig),
-]
-
-
-@pytest.fixture(params=MODELS, ids=["unconstrained", "divfree"])
-def model(request):
-    model_cls, config_cls = request.param
-    return model_cls(config_cls(
+# The divergence-free variant has its own dataclass-based I/O and is covered in
+# test_nucleus2_divfree.py; this file exercises the unconstrained model.
+@pytest.fixture
+def model():
+    return Nucleus2MoE(Nucleus2MoEConfig(
         patch_size=4,
         embed_dim=64,
         num_heads=2,

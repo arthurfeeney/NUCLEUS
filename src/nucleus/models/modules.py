@@ -11,7 +11,11 @@ from lion_pytorch import Lion
 import lightning as L
 
 from nucleus.data.batching import CollatedBatch
-from nucleus.models import get_model, load_model_from_checkpoint
+from nucleus.data.normalize import get_normalizer
+# Import from the _api submodule (not the nucleus.models package) so this module
+# can be imported from nucleus2_moe_divfree.py while the package __init__ is still
+# executing -- DivFreeForecastModule lives there and subclasses a class defined here.
+from nucleus.models._api import get_model, load_model_from_checkpoint
 from nucleus.utils.lr_schedulers import CosineWarmupLR, TrapezoidalLR
 from nucleus.layers.moe.topk_moe import TopkRouterWithBias
 from nucleus.utils.losses import phase_bce_with_logits_loss, field_gradient_loss
@@ -47,8 +51,11 @@ class ModuleBase(L.LightningModule):
         self.checkpoint_path = checkpoint_path
         self.model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
         self.data_cfg = OmegaConf.to_container(data_cfg, resolve=True)
+        self.normalizer_cfg = OmegaConf.to_container(normalizer_cfg, resolve=True)
         self.optimizer_cfg = OmegaConf.to_container(optim_cfg, resolve=True)
         self.scheduler_cfg = OmegaConf.to_container(scheduler_cfg, resolve=True)
+        # Same normalizer the data pipeline uses. Subclasses may need to normalize/denormalize
+        self.normalizer = get_normalizer(self.normalizer_cfg)
         self.save_hyperparameters(ignore=["model_cfg", "data_cfg", "normalizer_cfg", "optim_cfg", "scheduler_cfg"])
         if normalization_constants is not None:
             self.normalization_constants = normalization_constants
@@ -493,5 +500,11 @@ def get_train_module(module_name: str):
         return MoEConditionedForecastModule
     elif module_name == "phase_forecast_module":
         return PhaseForecastModule
+    elif module_name == "divfree_forecast":
+        # Imported lazily: DivFreeForecastModule lives in nucleus2_moe_divfree.py
+        # and subclasses MoEConditionedForecastModule (defined here), so importing
+        # it at module top would be a circular import.
+        from nucleus.models.nucleus2_moe_divfree import DivFreeForecastModule
+        return DivFreeForecastModule
     else:
         raise ValueError(f"Module {module_name} not supported")
