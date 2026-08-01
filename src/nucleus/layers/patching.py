@@ -146,20 +146,23 @@ class LinearDebed(nn.Module):
 
 
 class OverlappingPatchDebed(nn.Module):
-    def __init__(self, patch_size: int, out_channels: int, embed_dim: int, dtype: torch.dtype, overlap: int = None):
+    def __init__(self, patch_size: int, out_channels: int, embed_dim: int, dtype: torch.dtype, overlap: int = None, output_padding: int = 0):
         super().__init__()
         self.patch_size = patch_size
         self.out_channels = out_channels
         self.overlap = patch_size // 2 if overlap is None else overlap
-        # ConvTranspose2d output = (in - 1) * stride - 2 * padding + kernel. With
-        # kernel = patch_size + 2 * overlap, padding = overlap, stride = patch_size,
-        # this restores exactly (in * patch_size), matching LinearDebed's shape.
+        # ConvTranspose2d output = (in - 1) * stride - 2 * padding + kernel +
+        # output_padding. With kernel = patch_size + 2 * overlap, padding = overlap,
+        # stride = patch_size, this is (in * patch_size) + output_padding: the
+        # default restores LinearDebed's (in * patch_size) shape, while
+        # output_padding=1 emits the nodal (H+1, W+1) grid (one extra node per axis).
         self.conv_transpose = nn.ConvTranspose2d(
             embed_dim,
             out_channels,
             kernel_size=patch_size + 2 * self.overlap,
             stride=patch_size,
             padding=self.overlap,
+            output_padding=output_padding,
             bias=False,
             dtype=dtype,
         )
