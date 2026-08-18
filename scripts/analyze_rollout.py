@@ -31,8 +31,76 @@ def velocity_divergence(velx, vely, dx, dy):
 def max_divergence_over_time(velx, vely, sdf, dx, dy):
     # Worst-case divergence magnitude of liquid bulk  at each timestep.
     divergence = velocity_divergence(velx, vely, dx, dy)
-    
+
     return (np.abs(divergence) * (sdf < -1).astype(float)).max(axis=(-2, -1))
+
+def mac_divergence(velx, vely, dx, dy):
+    # Staggered (MAC) divergence: adjacent one-sided differences of face-valued
+    # velocities, co-located at interior cell centers. This uses the "each cell owns
+    # its east/north face" convention; the west/south convention just crops the
+    # other side (see _staggered_divergence_variants).
+    dvelx_dx = np.diff(velx, axis=-1) / dx   # (..., H, W-1)
+    dvely_dy = np.diff(vely, axis=-2) / dy   # (..., H-1, W)
+    return dvelx_dx[..., 1:, :] + dvely_dy[..., :, 1:]   # cells (1..H-1, 1..W-1)
+
+def _staggered_divergence_variants(sdf, velx, vely, dx, dy):
+    # Both MAC face-ownership conventions. Each returns (divergence, matching sdf)
+    # co-located on the cells the convention resolves.
+    dvelx_dx = np.diff(velx, axis=-1) / dx   # (..., H, W-1)
+    dvely_dy = np.diff(vely, axis=-2) / dy   # (..., H-1, W)
+    east_north = (dvelx_dx[..., 1:, :] + dvely_dy[..., :, 1:], sdf[..., 1:, 1:])
+    west_south = (dvelx_dx[..., :-1, :] + dvely_dy[..., :, :-1], sdf[..., :-1, :-1])
+    return {"east/north": east_north, "west/south": west_south}
+
+def _staggered_divergence_4th(sdf, velx, vely, dx, dy):
+    # Fourth-order-accurate staggered divergence. The first derivative of the
+    # face-valued velocity at a cell center is
+    #   d f/dx ~ [27 (f[j] - f[j-1]) - (f[j+1] - f[j-2])] / (24 dx),
+    # which cancels the O(dx^2) truncation of the adjacent difference. Both
+    # face-ownership conventions (like the second-order variants) co-located at
+    # interior cell centers, losing two cells at each boundary. If the ~1e-2 from
+    # the adjacent-difference variants is really discretization truncation on
+    # smooth, nearly divergence-free data, this should be much smaller.
+    dvelx_dx = (27 * (velx[..., 2:-1] - velx[..., 1:-2]) - (velx[..., 3:] - velx[..., :-3])) / (24 * dx)   # (..., H, W-3)
+    dvely_dy = (27 * (vely[..., 2:-1, :] - vely[..., 1:-2, :]) - (vely[..., 3:, :] - vely[..., :-3, :])) / (24 * dy)  # (..., H-3, W)
+    east_north = (dvelx_dx[..., 2:-1, :] + dvely_dy[..., :, 2:-1], sdf[..., 2:-1, 2:-1])
+    west_south = (dvelx_dx[..., 1:-2, :] + dvely_dy[..., :, 1:-2], sdf[..., 1:-2, 1:-2])
+    return {"east/north (4th)": east_north, "west/south (4th)": west_south}
+
+def verify_mac_divergence(gt, dx, dy, liquid_sdf=-2.0, percentile=99):
+    # Is the ground-truth velocity face-valued (staggered) or cell-centered?
+    # Compare the staggered (adjacent-diff) divergence against the collocated
+    # (central-diff) one in the liquid bulk, where incompressible flow should be
+    # divergence-free so real interface (Stefan) divergence does not pollute the
+    # test. A high percentile (not the max) is used so a few outlier spikes at
+    # bubble events do not dominate the comparison. Both MAC conventions are
+    # tried; the smaller one wins.
+    sdf, velx, vely = gt[..., 0], gt[..., 2], gt[..., 3]
+
+    def liquid_percentile(divergence, div_sdf):
+        values = np.abs(divergence)[div_sdf < liquid_sdf]
+        return float(np.percentile(values, percentile)) if values.size else float("nan")
+
+    central = liquid_percentile(velocity_divergence(velx, vely, dx, dy), sdf)
+    staggered = _staggered_divergence_variants(sdf, velx, vely, dx, dy)
+    staggered.update(_staggered_divergence_4th(sdf, velx, vely, dx, dy))
+    variants = {
+        name: liquid_percentile(divergence, div_sdf)
+        for name, (divergence, div_sdf) in staggered.items()
+    }
+    best_name = min(variants, key=variants.get)
+    mac = variants[best_name]
+    ratio = mac / central if central else float("nan")
+
+    print(f"ground-truth liquid-bulk divergence, p{percentile} |div| (should be ~0 for incompressible flow):")
+    for name, value in variants.items():
+        print(f"  staggered  ({name}) = {value:.4e}")
+    print(f"  collocated (central   ) = {central:.4e}")
+    print(f"  best staggered / collocated = {ratio:.4e}  ({best_name})")
+    if ratio < 0.05:
+        print(f"  -> velocity looks FACE-VALUED (MAC, {best_name}): use adjacent differences for the curl.")
+    else:
+        print("  -> velocity looks CELL-CENTERED: central differences are the right match.")
 
 def plot_vapor_volume_at_height(pred_vvh, gt_vvh, save_path):
     vmin = min(pred_vvh.min(), gt_vvh.min())
@@ -115,10 +183,14 @@ def main():
     pred = load_trajectory(path / "pred_trajectory.hdf5")
     gt = load_trajectory(path / "gt_trajectory.hdf5")
 
+    verify_mac_divergence(gt, 1/32, 1/32)
+
     pred_vv = vapor_volume(pred[..., 0], 1/32, 1/32).mean()
     gt_vv = vapor_volume(gt[..., 0], 1/32, 1/32).mean()
 
-    print(pred_vv, gt_vv)
+    print("Vapor Volume:")
+    print("Predicted: ", pred_vv)
+    print("Ground-truth: ", gt_vv)
 
     pred_vvh = vapor_volume_at_height(pred[..., 0], 1/32, 1/32)
     gt_vvh = vapor_volume_at_height(gt[..., 0], 1/32, 1/32)

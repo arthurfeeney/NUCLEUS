@@ -12,13 +12,13 @@ import matplotlib.pyplot as plt
 
 from nucleus.models.nucleus2_moe_divfree import (
     velocity_from_potentials,
-    vapor_gate_from_sdf,
     DOMAIN_X_MIN,
     DOMAIN_X_MAX,
     DOMAIN_Y_MIN,
     DOMAIN_Y_MAX,
     _cell_centers,
 )
+from nucleus.physics.sdf import band_mask
 
 
 def domain_grid(height, width):
@@ -190,7 +190,7 @@ def main():
     generator = torch.Generator().manual_seed(args.seed)
 
     sdf = circle_sdf(args.height, args.width, args.radius, args.center_x, args.center_y)
-    gate = vapor_gate_from_sdf(sdf, band=args.band)
+    gate = band_mask(sdf, args.band).to(sdf.dtype)
     psi = smooth_random_field(args.height, args.width, args.num_modes, generator)
     phi = smooth_random_field(args.height, args.width, args.num_modes, generator)
     if args.physical_psi:

@@ -11,6 +11,7 @@ import pytest
 from nucleus.run_forward_trajectory import run_test, TestResults
 from nucleus.models import get_model
 from nucleus.data.normalize import get_normalizer
+from nucleus.trajectory import Trajectory
 
 FIELDS = ["dfun", "temperature", "velx", "vely"]
 
@@ -20,9 +21,13 @@ def test_run(
     model_name,
     trajectory_steps
 ):
+    # The divfree model recomputes psi/phi in forward_trajectory, so it needs a
+    # normalizer that carries their stats; the default `standard` normalizer omits
+    # them (they are None).
+    overrides = ["normalizer_cfg=divfree"] if model_name == "nucleus2_moe_divfree" else []
     with initialize(version_base=None, config_path="../config"):
-        cfg = compose(config_name="inference")
-    
+        cfg = compose(config_name="inference", overrides=overrides)
+
     cfg.start_time = 0
     
     cfg.model_cfg.name = model_name
@@ -44,6 +49,9 @@ def test_run(
         with h5py.File(path, "w") as handle:
             for field in FIELDS:
                 handle.create_dataset(field, data=np.random.randn(50, 64, 64).astype(np.float32))
+            # Staggered face velocities the divfree model reads on their natural grids.
+            handle.create_dataset("velfacex", data=np.random.randn(50, 64, 65).astype(np.float32))
+            handle.create_dataset("velfacey", data=np.random.randn(50, 65, 64).astype(np.float32))
         json_path = path.replace("hdf5", "json")
         
         with open(json_path, "w") as handle:
@@ -77,6 +85,14 @@ def test_run(
             test_file_path=path, 
             trajectory_steps=trajectory_steps
         )
-        assert test_results.preds.isfinite().all()
-        assert test_results.targets.isfinite().all()
-        assert test_results.preds.shape[1:] == test_results.targets.shape[1:]
+        # Divfree results are natural-grid Trajectories; collocated results are
+        # (T, H, W, 4) tensors. Compare field-by-field so both are handled.
+        def fields(result):
+            if isinstance(result, Trajectory):
+                return [result.sdf, result.temp, result.velx, result.vely]
+            return [result]
+
+        for pred_field, target_field in zip(fields(test_results.preds), fields(test_results.targets)):
+            assert pred_field.isfinite().all()
+            assert target_field.isfinite().all()
+            assert pred_field.shape[1:] == target_field.shape[1:]

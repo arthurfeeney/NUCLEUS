@@ -4,7 +4,7 @@ layout: "t h w c"
 params:
   patch_size: 4
   embed_dim: 512
-  moe_intermediate_dim: 1024
+  moe_intermediate_dim: 2048
   processor_blocks: 12
   num_heads: 8
   num_experts: 6

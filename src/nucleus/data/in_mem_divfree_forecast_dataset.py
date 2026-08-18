@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 
 from nucleus.data.batching import Data, make_data
 from nucleus.data.normalize import Normalizer
-from nucleus.physics.poisson import helmholtz_from_faces
+from nucleus.physics.poisson import helmholtz_from_faces, GRID_SPACING
 
 
 @dataclass
@@ -129,12 +129,6 @@ def divfree_collate(
 # DivFreeData): dfun/temperature/phi cell-centered, velfacex/velfacey on the
 # staggered faces, psi on the nodes.
 BASE_FIELDS = ["dfun", "temperature", "velfacex", "velfacey"]
-
-# Cell spacing the staggered operators are evaluated with. This is really a
-# per-file property -- it should be derived from the sim params as
-# (x_max - x_min) / (num_blocks_x * nx_block) -- but every dataset in use shares
-# this resolution, so it is fixed for now.
-GRID_SPACING = 1 / 32
 
 
 class InMemDivFreeForecastDataset(Dataset):

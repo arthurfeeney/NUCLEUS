@@ -4,7 +4,8 @@
 - **Tech Stack**: Python 3.10, PyTorch, Pytorch Lightning, Hydra config manager.
 - **File Structure**:
   - `scripts/`: source code with scripts for training and evaluation.
-  - `src/nucleus`: source code with model implementations, Lightning Modules, Datasets, and plotting utilities.
+  - `src/nucleus/`: source code with model implementations, Lightning Modules, Datasets, and plotting utilities.
+  - `src/nucleus/physics/` source code for computing physical quantities and enforcing physics.
   - `config/`: yaml files to configure model training experiments.
   - `test/`: unit tests written with pytest. All unit tests should go here.
 
@@ -17,7 +18,8 @@ dependencies are managed using `uv`.
 - Prefer small, testable functions (< 30 lines) that have descriptive names.
 - Avoid duplicating code. If two functions share a large code block, write a separate function implementing the common code.
 - Avoid writing comments for things that will be clear from reading the implementation.
-- inline comments should explain WHY something is done, not WHAT is being done
+- inline comments should explain WHY a particular coding approach is used, not WHAT is being done
+- *DO NOT* add large docstrings at the top of files or for simple helper functions.
 
 ## Commands you can use
 

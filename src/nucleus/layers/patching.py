@@ -1,7 +1,7 @@
 import math
 import torch
 import torch.nn as nn
-from typing import Tuple
+from typing import Tuple, Union
 import einops
 
 class HMLPEmbed(nn.Module):
@@ -146,7 +146,7 @@ class LinearDebed(nn.Module):
 
 
 class OverlappingPatchDebed(nn.Module):
-    def __init__(self, patch_size: int, out_channels: int, embed_dim: int, dtype: torch.dtype, overlap: int = None, output_padding: int = 0):
+    def __init__(self, patch_size: int, out_channels: int, embed_dim: int, dtype: torch.dtype, overlap: int = None, output_padding: Union[int, Tuple[int, int]] = 0):
         super().__init__()
         self.patch_size = patch_size
         self.out_channels = out_channels

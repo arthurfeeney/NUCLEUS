@@ -30,6 +30,10 @@ class NormalizerConstants:
     psi_std: Optional[float] = None
     phi_mean: Optional[float] = None
     phi_std: Optional[float] = None
+    
+    # The divergence of the velocity field. If the model outputs
+    # this directly, it benefits to normalize.
+    divergence_std: Optional[float] = None
 
     numeric_sim_params_min: Optional[dict] = None
     numeric_sim_params_max: Optional[dict] = None
@@ -55,6 +59,7 @@ class NormalizerConstants:
         if self.psi_std is not None: sim_params_yaml.append(f"psi_std: {self.psi_std}")
         if self.phi_mean is not None: sim_params_yaml.append(f"phi_mean: {self.phi_mean}")
         if self.phi_std is not None: sim_params_yaml.append(f"phi_std: {self.phi_std}")
+        if self.divergence_std is not None: sim_params_yaml.append(f"divergence_std: {self.divergence_std}")
 
         fmin = yaml.dump({"sim_params_min": self.numeric_sim_params_min}, default_flow_style=False) if self.numeric_sim_params_min is not None else None
         fmax = yaml.dump({"sim_params_max": self.numeric_sim_params_max}, default_flow_style=False) if self.numeric_sim_params_max is not None else None
@@ -300,6 +305,12 @@ class DivFreeNormalizer(StandardNormalizer):
 
     def unnormalize_vely(self, vel: torch.Tensor) -> torch.Tensor:
         return vel * self.vel_std
+    
+    def normalize_divergence(self, divergence: torch.Tensor) -> torch.Tensor:
+        return divergence / self.constants.divergence_std
+    
+    def unnormalize_divergence(self, divergence: torch.Tensor) -> torch.Tensor:
+        return divergence * self.constants.divergence_std
 
 class NoNormalizer(Normalizer):
     def __init__(self):
@@ -333,6 +344,7 @@ def get_normalizer(normalizer_cfg: dict) -> Normalizer:
         psi_std=normalizer_cfg.get("psi_std"),
         phi_mean=normalizer_cfg.get("phi_mean"),
         phi_std=normalizer_cfg.get("phi_std"),
+        divergence_std=normalizer_cfg.get("divergence_std"),
         numeric_sim_params_min=normalizer_cfg["sim_params_min"],
         numeric_sim_params_max=normalizer_cfg["sim_params_max"],
     )
@@ -411,6 +423,7 @@ def main(cfg: DictConfig):
     import json
 
     from nucleus.physics.poisson import helmholtz_from_faces
+    from nucleus.physics.poisson import divergence_centers_from_faces
 
     absmax_temp = float("-inf")
     max_domain_size = float("-inf")
@@ -424,6 +437,7 @@ def main(cfg: DictConfig):
     temp_running_variance = RunningVariance()
     velx_running_variance = RunningVariance()
     vely_running_variance = RunningVariance()
+    divergence_running_variance = RunningVariance()
     helmholtz_psi_variance = RunningVariance()
     helmholtz_phi_variance = RunningVariance()
 
@@ -454,6 +468,8 @@ def main(cfg: DictConfig):
             psi_nodes, phi_centers = helmholtz_from_faces(velx, vely, 1/32, 1/32)
             helmholtz_psi_variance.update(psi_nodes)
             helmholtz_phi_variance.update(phi_centers)
+            div = divergence_centers_from_faces(velx, vely, 1/32, 1/32)
+            divergence_running_variance.update(div)
 
         if sim_params_min is None:
             sim_params_min = sim_params_dict
@@ -479,6 +495,7 @@ def main(cfg: DictConfig):
         psi_std=helmholtz_psi_variance.std() if helmholtz_psi_variance.count > 0 else None,
         phi_mean=helmholtz_phi_variance.mean() if helmholtz_phi_variance.count > 0 else None,
         phi_std=helmholtz_phi_variance.std() if helmholtz_phi_variance.count > 0 else None,
+        divergence_std=divergence_running_variance.std() if divergence_running_variance.count > 0 else None,
         numeric_sim_params_min=sim_params_min,
         numeric_sim_params_max=sim_params_max,
     )

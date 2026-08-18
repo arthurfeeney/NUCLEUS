@@ -3,6 +3,19 @@ from typing import Tuple
 import torch
 
 
+def _central_difference(field: torch.Tensor, spacing: float, dim: int) -> torch.Tensor:
+    """Explicit finite-difference derivative of a cell-centered field along ``dim``:
+    a second-order central difference ``(f[i+1] - f[i-1]) / (2h)`` in the interior and
+    a first-order one-sided difference at the two boundary cells. Built with
+    ``narrow`` + ``cat`` (no in-place writes) so it differentiates and compiles cleanly.
+    """
+    n = field.size(dim)
+    interior = (field.narrow(dim, 2, n - 2) - field.narrow(dim, 0, n - 2)) / (2.0 * spacing)
+    first = (field.narrow(dim, 1, 1) - field.narrow(dim, 0, 1)) / spacing
+    last = (field.narrow(dim, n - 1, 1) - field.narrow(dim, n - 2, 1)) / spacing
+    return torch.cat([first, interior, last], dim=dim)
+
+
 def interface_normals(
     sdf: torch.Tensor, dx: float, dy: float, eps: float = 1e-12
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -21,7 +34,8 @@ def interface_normals(
     Returns:
         ``(normal_x, normal_y)``, each shape ``(..., H, W)``.
     """
-    grad_y, grad_x = torch.gradient(sdf, spacing=(dy, dx), dim=(-2, -1), edge_order=1)
+    grad_x = _central_difference(sdf, dx, dim=-1)
+    grad_y = _central_difference(sdf, dy, dim=-2)
     magnitude = torch.sqrt(grad_x**2 + grad_y**2).clamp_min(eps)
     return grad_x / magnitude, grad_y / magnitude
 
@@ -62,28 +76,6 @@ def band_mask(sdf: torch.Tensor, band_width: float) -> torch.Tensor:
     return sdf.abs() <= band_width
 
 
-def smoothed_delta(sdf: torch.Tensor, half_width: float) -> torch.Tensor:
-    """Regularized interface delta on the SDF: a raised-cosine bump of half-width
-    ``half_width`` (a distance) centered on the zero level set and zero beyond it.
-
-    Normalized so it integrates to one across the interface normal
-    (``integral of (1 + cos(pi s / w)) / (2 w) ds`` over ``[-w, w]`` is 1), so it
-    spreads a surface quantity into a band without changing its integrated
-    strength -- the standard way (Brackbill/Peskin) to represent an interfacial
-    source on a fixed grid over more than one cell.
-
-    Args:
-        sdf: cell-centered signed distance, shape ``(..., H, W)``.
-        half_width: half-width of the bump, a distance in the SDF's units.
-
-    Returns:
-        Regularized delta, shape ``(..., H, W)``.
-    """
-    inside = sdf.abs() < half_width
-    bump = (1.0 + torch.cos(torch.pi * sdf / half_width)) / (2.0 * half_width)
-    return torch.where(inside, bump, torch.zeros_like(sdf))
-
-
 def _upwind_normal_gradient(
     field: torch.Tensor, normal_x: torch.Tensor, normal_y: torch.Tensor, dx: float, dy: float
 ) -> torch.Tensor:
@@ -113,7 +105,7 @@ def constant_normal_extrapolation(
     dx: float,
     dy: float,
     tolerance: float = 1e-6,
-    max_iterations: int = 5,
+    max_iterations: int = 4,
 ) -> torch.Tensor:
     """Constant extrapolation of ``field`` along the interface normals into
     ``fill_mask``, iterated to steady state.
