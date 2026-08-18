@@ -10,12 +10,11 @@ from nucleus.physics.sdf import (
     liquid_mask,
     vapor_mask,
     constant_normal_extrapolation,
-    smoothed_delta,
 )
 from nucleus.physics.temp_grad import vapor_temp_grad, liquid_temp_grad
 from nucleus.physics.extrapolate_flux import extrapolate_phase_flux
 
-DEFAULT_BAND_CELLS = 5
+DEFAULT_BAND_CELLS = 4
 
 
 def interface_heatflux(
@@ -80,11 +79,14 @@ def interface_heatflux(
 
     lmask = liquid_mask(sdf).to(temp.dtype)
     vmask = vapor_mask(sdf).to(temp.dtype)
+    
+    #band_mask = (abs(sdf) < (band_cells * max(dx, dy))).to(temp.dtype)
 
     # mask of the cells where some extrapolation across phases occurred.
-    extrapolated_cells = (
-        (lmask * ext_vapor_heat_flux != 0) | (vmask * ext_liquid_heat_flux != 0)
-    ).to(temp.dtype)
+    extrapolated_cells = 1.0 #band_mask
+    #(
+    #    (lmask * ext_vapor_heat_flux != 0) | (vmask * ext_liquid_heat_flux != 0)
+    #).to(temp.dtype) * band_mask
     
     return ext_liquid_heat_flux * extrapolated_cells, ext_vapor_heat_flux * extrapolated_cells
 

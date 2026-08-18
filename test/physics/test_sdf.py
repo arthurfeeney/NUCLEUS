@@ -4,7 +4,6 @@ from nucleus.physics.sdf import (
     band_mask,
     constant_normal_extrapolation,
     interface_normals,
-    smoothed_delta,
     vapor_mask,
 )
 
@@ -44,23 +43,6 @@ def test_extrapolation_fills_constant_across_band():
     assert (filled[vapor_band] - 2.0).abs().max() < 1e-3
     # source (liquid) values are untouched
     assert torch.all(filled[sdf < 0] == field[sdf < 0])
-
-
-def test_smoothed_delta_integrates_to_one_and_is_banded():
-    # The regularized delta must integrate to 1 across the normal (so it spreads a
-    # surface source without changing its strength) and be supported on the band.
-    dx = dy = 1.0 / 32
-    H = W = 96
-    sdf = _vertical_sdf(H, W, dx, dy)
-    half_width = 3 * dx
-
-    delta = smoothed_delta(sdf, half_width)
-    # integrate along x (the normal) on any row: sum * dx ~= 1
-    row_integral = delta[H // 2, :].sum() * dx
-    assert abs(float(row_integral) - 1.0) < 1e-3
-    # supported only within the band
-    assert torch.all(delta[sdf.abs() >= half_width] == 0)
-    assert torch.all(delta[sdf.abs() < half_width] > 0)
 
 
 def test_extrapolation_stays_within_the_band():

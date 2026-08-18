@@ -6,10 +6,22 @@ import torch
 # NOTE: these utilities hardcode boundaries for pool-boiling.
 # I.e., left, right, and bottom are no-slip walls. The top is an outflow.
 
+# Physical grid spacing (dx = dy) of the pool-boiling simulations: 32 cells per unit
+# length. Single source of truth shared by the dataset, model, and normalizer so the
+# curl/grad reconstruction and the potential normalization stay consistent.
+GRID_SPACING = 1 / 32
+
 def divergence_centers_from_faces(facex, facey, dx, dy):
     """cell-centered divergence of a face-valued field.
     """
-    return torch.diff(facex, axis=-1) / dx + torch.diff(facey, axis=-2) / dy
+    return_numpy = isinstance(facex, np.ndarray)
+    if return_numpy:
+        facex = torch.from_numpy(facex)
+        facey = torch.from_numpy(facey)
+    div = torch.diff(facex, axis=-1) / dx + torch.diff(facey, axis=-2) / dy
+    if return_numpy:
+        return div.numpy()
+    return div
 
 
 def vorticity_nodes_from_faces(facex, facey, dx, dy):

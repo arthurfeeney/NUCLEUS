@@ -251,7 +251,7 @@ def plot_mass_transfer(temp, sdf, mass_flux, velfacex, velfacey, sim_params, sav
     # saturation temperature must be on the same (bulk -> 0, heater -> 1) scale.
     bulk_temp = sim_params["bulk_temp"]
     heater_temp = sim_params["heater"]["wallTemp"]
-    temp = non_dimensionalize_temp(temp, bulk_temp, heater_temp)
+    temp = non_dimensionalize_temp(temp.to(torch.float64), bulk_temp, heater_temp)
     sat_temp = non_dimensionalize_temp(sim_params["sat_temp"], bulk_temp, heater_temp)
     # The heater wall is at heater_temp, which is 1 on the non-dimensional scale.
     wall_temp = non_dimensionalize_temp(heater_temp, bulk_temp, heater_temp) if use_wall_bc else None

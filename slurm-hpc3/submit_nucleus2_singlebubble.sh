@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -A amowli_lab_gpu
-#SBATCH -p free-gpu32
-#SBATCH --job-name=train-nucleus-exp
+#SBATCH -p free-gpu
+#SBATCH --job-name=train-nucleus-singlebubble
 #SBATCH -o slurm-%x-%j.out
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=100GB
-#SBATCH --gres=gpu:RTX6000:1
+#SBATCH --mem=75GB
+#SBATCH --gres=gpu:A100:1
 #SBATCH --time=12:59:00
 
 uv venv $TMPDIR/NUCLEUS
@@ -29,14 +29,17 @@ python scripts/train.py \
     model_cfg.params.patch_size=16 \
     model_cfg.params.patching="Linear" \
     model_cfg.params.activation_dtype="float32" \
-    data_cfg=poolboiling \
+    pydataset=in_mem_forecast \
+    data_dir=/share/crsp/lab/amowli/share/BubbleML_staggered/ \
+    data_cfg=singlebubble \
     normalizer_cfg=divfree \
-    batch_size=64 \
-    accumulate_grad_batches=2 \
-    optim_cfg.params.lr=1e-3 \
-    optim_cfg.params.weight_decay=1e-3 \
-    max_steps=100000 \
+    pydataset=in_mem_divfree_forecast \
+    batch_size=16 \
+    accumulate_grad_batches=1 \
+    optim_cfg.params.lr=5e-4 \
+    optim_cfg.params.weight_decay=1e-2 \
+    max_steps=150000 \
     scheduler_cfg=trapezoidal \
-    scheduler_cfg.params.warmup=2000 \
-    scheduler_cfg.params.cooldown=20000 \
+    scheduler_cfg.params.warmup=4000 \
+    scheduler_cfg.params.cooldown=40000 \
     log_dir=/pub/afeeney/nucleus_logs

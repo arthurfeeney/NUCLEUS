@@ -69,7 +69,7 @@ def sdf_reinit_sussman(
             sdf = sdf - dtau * S * (grad_mag - 1.0)
 
             # only update away from interface
-            near_mask = sdf0_step > near_threshold
+            near_mask = abs(sdf0_step) < abs(near_threshold)
             sdf[near_mask] = sdf0_step[near_mask]
             
         reinit_sdf[i] = sdf

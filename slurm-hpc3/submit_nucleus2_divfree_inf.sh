@@ -20,10 +20,10 @@ uv sync --no-cache --active --extra cu130
 uv pip install -e .
 
 python scripts/inf.py \
-    model_cfg=nucleus2/nucleus2_experiment \
+    model_cfg=nucleus2/nucleus2_divfree \
     checkpoint_path=/share/crsp/lab/amowli/share/nucleus2-model-ckpts/neighbor_moe_exp_may13.ckpt \
-    data_dir=/share/crsp/lab/amowli/share/BubbleML_2/ \
-    data_cfg=poolboiling64 \
-    normalizer_cfg=standard \
+    data_dir=/share/crsp/lab/amowli/share/BubbleML_staggered/ \
+    data_cfg=singlebubble \
+    normalizer_cfg=divfree \
     log_dir=/pub/afeeney/nucleus_logs/ \
     trajectory_steps=1500 \

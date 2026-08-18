@@ -176,7 +176,6 @@ def main(cfg: DictConfig) -> None:
     
     normalizer = get_normalizer(OmegaConf.to_container(cfg.normalizer_cfg, resolve=True))
 
-    collate_fn = collate
     shared_dataset_kwargs = dict(
         history_time_window=cfg.history_time_window,
         future_time_window=cfg.future_time_window,
@@ -188,10 +187,11 @@ def main(cfg: DictConfig) -> None:
     )
 
     pydataset = cfg.pydataset
+    dataset_cls, collate_fn = get_pydataset(pydataset)
+    
     use_webdataset = pydataset == "forecast_web"
     if use_webdataset:
         train_shard_urls = list(braceexpand.braceexpand(list(cfg.data_cfg.train_paths)[0]))
-
         train_dataset = forecast_web_dataset(
             shard_urls=train_shard_urls,
             cache_dir=None,
@@ -207,7 +207,6 @@ def main(cfg: DictConfig) -> None:
             **shared_dataset_kwargs,
         )
     else:
-        dataset_cls = get_pydataset(pydataset)
         hdf5_kwargs = dict(
             time_step=cfg.time_step,
             start_time=cfg.start_time,

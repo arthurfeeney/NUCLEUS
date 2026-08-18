@@ -10,14 +10,31 @@ from omegaconf import DictConfig, OmegaConf
 from nucleus.models import load_model_from_checkpoint
 from nucleus.data.normalize import get_normalizer
 from nucleus.run_forward_trajectory import run_test, TestResults
+from nucleus.trajectory import Trajectory
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 
-def save_trajectory_as_hdf5(path, trajectory: torch.Tensor):
-    FIELDS = ["dfun", "temperature", "velx", "vely"]
-    trajectory_np = trajectory.cpu().detach().numpy()
+def save_trajectory_as_hdf5(path, trajectory):
     with h5py.File(path, "w") as handle:
-        for key, field in zip(FIELDS, np.split(trajectory_np, trajectory_np.shape[-1], -1)):
-            handle.create_dataset(key, data=field)
+        if isinstance(trajectory, Trajectory):
+            # Natural-grid fields: velocities on their staggered faces, plus the
+            # Helmholtz potentials when present. Drop the leading batch dim.
+            fields = {
+                "dfun": trajectory.sdf,
+                "temperature": trajectory.temp,
+                "velfacex": trajectory.velx,
+                "velfacey": trajectory.vely,
+            }
+            if trajectory.psi is not None:
+                fields["psi"] = trajectory.psi
+            if trajectory.phi is not None:
+                fields["phi"] = trajectory.phi
+            for key, field in fields.items():
+                handle.create_dataset(key, data=field.squeeze(0).cpu().detach().numpy())
+        else:
+            FIELDS = ["dfun", "temperature", "velx", "vely"]
+            trajectory_np = trajectory.cpu().detach().numpy()
+            for key, field in zip(FIELDS, np.split(trajectory_np, trajectory_np.shape[-1], -1)):
+                handle.create_dataset(key, data=field)
 
 @hydra.main(version_base=None, config_path="../config", config_name="inference")
 def main(cfg: DictConfig):
@@ -25,7 +42,13 @@ def main(cfg: DictConfig):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = load_model_from_checkpoint(cfg.checkpoint_path, map_location=device)
+    # Pass model_cfg so pre-"_extra_state" checkpoints (no embedded config) can still
+    # be rebuilt; it is ignored for checkpoints that embed their own config.
+    model = load_model_from_checkpoint(
+        cfg.checkpoint_path,
+        map_location=device,
+        model_cfg=OmegaConf.to_container(cfg.model_cfg, resolve=True),
+    )
     model = model.to(device)
     model.eval()
 
