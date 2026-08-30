@@ -19,7 +19,7 @@ dependencies are managed using `uv`.
 - Avoid duplicating code. If two functions share a large code block, write a separate function implementing the common code.
 - Avoid writing comments for things that will be clear from reading the implementation.
 - inline comments should explain WHY a particular coding approach is used, not WHAT is being done
-- *DO NOT* add large docstrings at the top of files or for simple helper functions.
+- *DO NOT* add large docstrings at the top of files or functions.
 
 ## Commands you can use
 
