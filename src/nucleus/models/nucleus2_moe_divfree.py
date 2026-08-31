@@ -18,7 +18,8 @@ from nucleus.layers import (
     AdaptiveDebed,
     LinearEmbed,
     LinearDebed,
-    OverlappingPatchDebed
+    OverlappingPatchDebed,
+    GaussianFilter,
 )
 from nucleus.data.in_mem_divfree_forecast_dataset import DivFreeBatch, DivFreeData
 from nucleus.trajectory import Trajectory
@@ -81,6 +82,14 @@ class Nucleus2MoEDivFreeConfig:
     # 1.0 disables it, and intermediate values (e.g. dx**0.5) damp it partially.
     # Only affects the backward pass -- the forward velocity is unchanged.
     potential_grad_scale: float = GRID_SPACING
+    # Fixed (non-learnable) Gaussian smoother applied to the nodal streamfunction psi
+    # before the curl, so the reconstructed solenoidal velocity is curl(S psi). The
+    # curl amplifies high wavenumbers (~k/dx), so smoothing psi first bandlimits it and
+    # keeps grid-scale noise from being amplified into the velocity. Disabled when
+    # psi_smooth_kernel_size < 3 (identity). The kernel size (in nodes, must be odd) and
+    # the Gaussian std (in nodes) are both adjustable.
+    psi_smooth_kernel_size: int = 0
+    psi_smooth_sigma: float = 1.0
 
 
 def _config_to_dict(config: Nucleus2MoEDivFreeConfig) -> dict:
@@ -404,13 +413,11 @@ class Nucleus2MoEDivFreeOutput:
     psi: torch.Tensor
     phi: torch.Tensor
     # The predicted divergence source (cell-centered, before gating): the RHS of the
-    # Poisson solve for phi. Supervised against the divergence of the target velocity.
+    # Poisson solve for phi.
     div_source: torch.Tensor
     moe_outputs: list
 
     def to_cell_tensor(self) -> torch.Tensor:
-        """Split the fields onto the dataset's 11 cell-centered channels, shape
-        ``(..., H, W, 11)`` (see :func:`divfree_fields_to_cells`)."""
         return divfree_fields_to_cells(
             self.sdf, self.temperature, self.velx, self.vely, self.psi, self.phi
         )
@@ -418,7 +425,7 @@ class Nucleus2MoEDivFreeOutput:
 
 @register_model("nucleus2_moe_divfree")
 @torch.compile(fullgraph=True)
-class Nucleus2MoEDivFree(nn.Module):    
+class Nucleus2MoEDivFree(nn.Module):
     config_class = Nucleus2MoEDivFreeConfig
     config_from_dict = staticmethod(_config_from_dict)
     expected_fluid_params = [
@@ -428,9 +435,7 @@ class Nucleus2MoEDivFree(nn.Module):
     expected_heater_params = ["wallTemp", "xMin", "xMax"]
     expected_global_params = ["gravy"]
     # Cell-centered channels the patch embedding consumes: sdf, temperature, and the
-    # x/y-face velocities split onto their two bordering cells. psi/phi are NOT fed in
-    # -- they are predicted (via the potential heads) and reconstructed into velocity,
-    # but the input is only sdf, temperature, and velocity. See divfree_input_to_cells.
+    # x/y-face velocities split onto their two bordering cells.
     expected_fields = [
         "dfun", "temperature",
         "vel_left", "vel_right", "vel_bottom", "vel_top",
@@ -526,6 +531,10 @@ class Nucleus2MoEDivFree(nn.Module):
         nn.init.zeros_(self.debed_psi.conv_transpose.weight)
         nn.init.zeros_(self.debed_div.conv_transpose.weight)
 
+        # Fixed Gaussian smoother applied to psi before the curl (v = curl(S psi)) so
+        # the curl does not amplify grid-scale noise in the streamfunction.
+        self.psi_smoother = GaussianFilter(config.psi_smooth_kernel_size, config.psi_smooth_sigma)
+
     def get_extra_state(self):
         return {"model_name": getattr(self, "_model_name", None), "config": _config_to_dict(self.config)}
 
@@ -594,7 +603,7 @@ class Nucleus2MoEDivFree(nn.Module):
 
         with record_function("debed"):
             x = self.out_norm(x.to(self.debed_dtype) + embed.to(self.debed_dtype))
-            
+
             sdf, temp = self.debed(x, target_shape=(h, w)).unbind(-1)
 
             sdf_physical = normalizer.unnormalize_sdf(sdf)
@@ -602,8 +611,11 @@ class Nucleus2MoEDivFree(nn.Module):
                 sdf_physical = sdf_reinit_sussman(sdf_physical, GRADIENT_SPACING, n_iter=5, near_threshold=0.1)
 
             psi_nodal = self.debed_psi(x, target_shape=(h + 1, w + 1))[..., 0]
-            psi_for_recon = scale_gradient(psi_nodal, self.config.potential_grad_scale)
-            psi_nodal_physical = normalizer.unnormalize_psi(psi_for_recon)
+            # curl(psi) is invariant to shifts, so set psi to zero mean.
+            psi_nodal = psi_nodal - psi_nodal.mean()
+            # Smooth psi before the curl, treated as preconditioning.
+            psi_smoothed = self.psi_smoother(psi_nodal)
+            psi_nodal_physical = normalizer.unnormalize_psi(psi_smoothed)
             velfacex_sol, velfacey_sol = curl_faces_from_nodes(
                 psi_nodal_physical, GRADIENT_SPACING, GRADIENT_SPACING
             )
@@ -611,21 +623,19 @@ class Nucleus2MoEDivFree(nn.Module):
             velfacey_sol = normalizer.normalize_vely(velfacey_sol)
 
             if use_mass_transfer:
-                # Replace the learned divergence source with the physics source from the
+                # Replace the learned divergence source with the source from the
                 # Stefan condition (mdot * n.grad(rho)), derived from the predicted temp/sdf.
                 assert sim_params_dict is not None, "use_mass_transfer requires sim_params_dict"
                 div_source = self._continuity_div_source(
                     temp.to(torch.float64), sdf_physical.to(torch.float64), sim_params_dict, normalizer)
             else:
                 div_source = self.debed_div(x, target_shape=(h, w))[..., 0]
+                div_source = div_source - div_source.mean()
             gated_source = div_source
             if use_div_gate:
                 div_gate = band_mask(sdf_physical, 3.0 * GRADIENT_SPACING).to(self.debed_dtype)
                 gated_source = div_gate * div_source
-            # div_source is used as a training target, so this downweights the contribution of
-            # phi to its gradient.
-            gated_source_for_recon = scale_gradient(gated_source, self.config.potential_grad_scale)
-            # NOTE: using float64 improves divergence-free results drastically.
+            
             phi = solve_poisson_neumann_dirichlet(gated_source.to(torch.float64), GRADIENT_SPACING, GRADIENT_SPACING)
             velfacex_dil, velfacey_dil = grad_faces_from_centers(phi, GRADIENT_SPACING, GRADIENT_SPACING)
 
@@ -782,17 +792,8 @@ class DivFreeForecastModule(MoEConditionedForecastModule):
     no cell-splitting.
     """
 
-    # Natural-grid fields compared in the loss / logged per-field. velx/vely are
-    # the reconstructed face velocities; the rest are predicted directly.
+    # Natural-grid fields compared in the loss / logged per-field.
     LOSS_FIELD_NAMES = ("sdf", "temperature", "velx", "vely", "psi", "phi")
-
-    # Curriculum: supervise only the directly-predicted potentials (sdf, temperature,
-    # psi, phi) first, then add the reconstructed velocities once those are decent.
-    # The reconstructed-velocity loss backprops through the curl/grad operators
-    # (a ~1/dx amplification), so gating it out early lets the potentials settle
-    # before that stiff gradient path is switched on. velx/vely are still logged
-    # per-field throughout so their MAE is visible before they enter the loss.
-    VELOCITY_LOSS_START_STEP = 10000
 
     def __init__(self, checkpoint_path=None, *args, **kwargs):
         # ModuleBase reads checkpoint_path as "rebuild the exact model saved in the
@@ -970,16 +971,6 @@ class DivFreeForecastModule(MoEConditionedForecastModule):
         )
         total_elements = sum(pred_grid.numel() for pred_grid in pred_grids)
         return total_abs_error / total_elements
-    
-    def _sdf_sign_loss(self, output: Nucleus2MoEDivFreeOutput, target: DivFreeData):
-        r""" An extra penalty that the sign of the SDF matches the target. This
-        is important near the interface, since an incorrect sign may still be "close"
-        to the ground-truth in terms of MAE.
-        """
-        alpha = 0.01
-        loss_interface_weight = torch.exp(-abs(output.sdf))
-        elem_loss = torch.nn.functional.softplus(-alpha * sdf_true * sdf_pred) * loss_interface_weight
-        return elem_loss.mean(dim=(-3, -2, -1)).mean()
 
     def _augment_field(self, field: torch.Tensor) -> torch.Tensor:
         # self.augmentations (LogUniformNoise, FieldDropout) expect a channels-last
