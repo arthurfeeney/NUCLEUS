@@ -21,9 +21,8 @@ def test_run(
     model_name,
     trajectory_steps
 ):
-    # The divfree model recomputes psi/phi in forward_trajectory, so it needs a
-    # normalizer that carries their stats; the default `standard` normalizer omits
-    # them (they are None).
+    # The divfree model needs the divfree-specific normalization stats (sdf/velx/
+    # vely/temp); the default `standard` normalizer doesn't carry them.
     overrides = ["normalizer_cfg=divfree"] if model_name == "nucleus2_moe_divfree" else []
     with initialize(version_base=None, config_path="../config"):
         cfg = compose(config_name="inference", overrides=overrides)
