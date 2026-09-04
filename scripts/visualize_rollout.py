@@ -63,7 +63,7 @@ def velocity_divergence(velx, vely, is_face, dx, dy):
     return np.gradient(velx, dx, axis=-1) + np.gradient(vely, dy, axis=-2)
 
 
-def plot_divergence(data, save_path, num_frames=5, dx=1/32, dy=1/32):
+def plot_divergence(data, save_path, num_frames=6, dx=1/32, dy=1/32):
     # Velocity divergence at evenly-spaced frames, laid out across columns. It is signed
     # and spans orders of magnitude, so a symmetric-log norm with a single scale shared
     # across the frames is used. The face stencil is used when the velocity is staggered.
@@ -131,7 +131,7 @@ def main():
 
     builder = BoilingVideoBuilder(cell_trajectory[::10])
     builder.make_video(
-        "./traj.gif",
+        f"{path}/traj.gif",
         duration=10,
         colorbars=False,
         step_counter=True,
