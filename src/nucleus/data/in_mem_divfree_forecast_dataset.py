@@ -247,8 +247,8 @@ class InMemDivFreeForecastDataset(Dataset):
             inp_fields = self._flip_width(inp_fields)
             out_fields = self._flip_width(out_fields)
 
-        sim_params = self.sim_params[file_idx]
-        bulk_temp = int(sim_params["bulk_temp"])
+        sim_params_physical = self.sim_params[file_idx]
+        bulk_temp = int(sim_params_physical["bulk_temp"])
 
         # Input and target are each a DivFreeData (fields on their natural grids).
         # make_data still carries the grids and sim-param tensor; a DivFreeData-aware
@@ -256,18 +256,26 @@ class InMemDivFreeForecastDataset(Dataset):
         inp_data = self._to_divfree_data(inp_fields, bulk_temp)
         out_data = self._to_divfree_data(out_fields, bulk_temp)
 
+        # sim_params_tensor (the network's conditioning input) needs normalized
+        # values, but DivFreeBatch.sim_params -- consumed by step()'s temperature
+        # ansatz / continuity as physical constants (sat_temp, heater wallTemp/xMin/
+        # xMax, ...) -- must stay physical, the same units run_forward_trajectory.py
+        # loads directly from the JSON at rollout time. Normalizing the dict that
+        # became DivFreeBatch.sim_params here used to silently mismatch those units
+        # between training and rollout.
+        sim_params_for_tensor = sim_params_physical
         if self.normalizer is not None:
-            sim_params = self.normalizer.normalize_params([sim_params])[0]
+            sim_params_for_tensor = self.normalizer.normalize_params([sim_params_physical])[0]
 
         sim_params_tensor = np.array(
-            [sim_params[p] for p in self.fluid_params] +
-            [sim_params["heater"][p] for p in self.heater_params] + 
-            [sim_params[p] for p in self.global_params]
+            [sim_params_for_tensor[p] for p in self.fluid_params] +
+            [sim_params_for_tensor["heater"][p] for p in self.heater_params] +
+            [sim_params_for_tensor[p] for p in self.global_params]
         )
 
         return (
             inp_data,
             out_data,
-            sim_params,
+            sim_params_physical,
             sim_params_tensor
         )
