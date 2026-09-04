@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:A30:1
-#SBATCH --time=00:59:00
+#SBATCH --time=00:10:00
 
 uv venv $TMPDIR/NUCLEUS
 source $TMPDIR/NUCLEUS/bin/activate
@@ -19,11 +19,18 @@ export PYTHONPYCACHE_DIR=$TMPDIR/pycache/
 uv sync --no-cache --active --extra cu130
 uv pip install -e .
 
+uv pip install -e ../boiling-viz/
+
+CKPT=/pub/afeeney/nucleus_logs/nucleus2_moe_divfree_singlebubble_2026-09-03_55730388/checkpoints/last.ckpt
+ROLLOUT=/pub/afeeney/nucleus_logs/nucleus2_moe_divfree_singlebubble_2026-09-03_55730388/checkpoints/rollouts/saturated_fc72_100/
+
 python scripts/inf.py \
     model_cfg=nucleus2/nucleus2_divfree \
-    checkpoint_path=/share/crsp/lab/amowli/share/nucleus2-model-ckpts/neighbor_moe_exp_may13.ckpt \
+    checkpoint_path=$CKPT \
     data_dir=/share/crsp/lab/amowli/share/BubbleML_staggered/ \
     data_cfg=singlebubble \
     normalizer_cfg=divfree \
     log_dir=/pub/afeeney/nucleus_logs/ \
-    trajectory_steps=1500 \
+    trajectory_steps=300 \
+
+python scripts/visualize_rollout.py --path $ROLLOUT \
