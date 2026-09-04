@@ -12,12 +12,12 @@ from nucleus.models.nucleus2_moe_divfree import (
     Nucleus2MoEDivFreeInput,
     Nucleus2MoEDivFreeOutput,
     divfree_input_to_cells,
-    scale_gradient,
 )
 from nucleus.data.in_mem_divfree_forecast_dataset import DivFreeBatch, DivFreeData
 from nucleus.trajectory import Trajectory
 from nucleus.data.normalize import DivFreeNormalizer, NormalizerConstants
 from nucleus.physics.poisson import divergence_centers_from_faces
+from nucleus.utils.losses import sdf_sign_bce_loss
 
 
 class _IdentityParamsNormalizer(DivFreeNormalizer):
@@ -66,9 +66,23 @@ def make_divfree_data(batch_size, time, height, width, sdf_fill=None) -> DivFree
 
 
 def as_input(data: DivFreeData) -> Nucleus2MoEDivFreeInput:
-    return Nucleus2MoEDivFreeInput(
-        data.sdf, data.temperature, data.velx, data.vely, data.psi, data.phi
-    )
+    return Nucleus2MoEDivFreeInput(data.sdf, data.temperature, data.velx, data.vely)
+
+
+def temp_sim_params_dict() -> dict:
+    """The physical scalars step's temperature ansatz reads: bulk_temp (used to
+    unnormalize the network's temperature output to physical units), the saturation
+    temperature, and the heater's wall temperature and x-extent."""
+    return {
+        "bulk_temp": 50.0, "sat_temp": 58.0,
+        "heater": {"wallTemp": 80.0, "xMin": 0.4, "xMax": 1.6},
+    }
+
+
+def x_coords_for(width: int) -> torch.Tensor:
+    """Cell-center x positions, shape ``(width,)``, in the same units as the heater
+    x-extent above."""
+    return (torch.arange(width, dtype=torch.float32) + 0.5) * GRADIENT_SPACING
 
 
 def make_batch(data: DivFreeData, sim_params_tensor: torch.Tensor) -> DivFreeBatch:
@@ -76,24 +90,34 @@ def make_batch(data: DivFreeData, sim_params_tensor: torch.Tensor) -> DivFreeBat
     return DivFreeBatch(
         input=data,
         target=None,
-        sim_params=[{} for _ in range(batch_size)],
+        sim_params=[temp_sim_params_dict() for _ in range(batch_size)],
         dx=torch.full((batch_size,), GRADIENT_SPACING),
         dy=torch.full((batch_size,), GRADIENT_SPACING),
         sim_params_tensor=sim_params_tensor,
     )
 
 
-def run_step(model, data, sim_params, normalizer, input_type, use_div_gate=False):
+def run_step(model, data, sim_params, normalizer, input_type, use_div_gate=False, use_leray=False):
     """Feed the model input as either a bare ``Nucleus2MoEDivFreeInput`` (with the
-    sim-param tensor passed separately) or a ``DivFreeBatch`` (which carries it)."""
+    sim-param tensor and dict passed separately) or a ``DivFreeBatch`` (which carries
+    them). Both paths supply the x-coordinates the temperature ansatz needs."""
+    x_coords = x_coords_for(data.sdf.shape[-1])
     if input_type == "input":
-        return model.step(as_input(data), sim_params, normalizer, use_div_gate=use_div_gate)
-    return model.step(make_batch(data, sim_params), normalizer=normalizer, use_div_gate=use_div_gate)
+        return model.step(
+            as_input(data), sim_params, normalizer, x_coords=x_coords,
+            sim_params_dict=[temp_sim_params_dict() for _ in range(data.sdf.shape[0])],
+            use_div_gate=use_div_gate, use_leray=use_leray,
+        )
+    return model.step(
+        make_batch(data, sim_params), normalizer=normalizer, x_coords=x_coords,
+        use_div_gate=use_div_gate, use_leray=use_leray,
+    )
 
 
 def make_sim_params_dict(model) -> dict:
     # forward_trajectory assembles its conditioning tensor from a physical sim-param
-    # dict; the values are arbitrary for a finiteness/shape check.
+    # dict; the values are arbitrary for a finiteness/shape check. expected_heater_params
+    # already includes xMin/xMax, which the temperature ansatz's heater band also reads.
     params = {"bulk_temp": 50.0, "sat_temp": 58.0}
     params.update({param: random.random() for param in model.expected_fluid_params})
     params["heater"] = {param: random.random() for param in model.expected_heater_params}
@@ -116,10 +140,56 @@ def test_step_returns_output_on_natural_grids(model, input_type):
     assert output.temperature.shape == (batch_size, time, height, width)
     assert output.velx.shape == (batch_size, time, height, width + 1)
     assert output.vely.shape == (batch_size, time, height + 1, width)
-    assert output.psi.shape == (batch_size, time, height + 1, width + 1)
     assert output.phi.shape == (batch_size, time, height, width)
-    for field in (output.sdf, output.temperature, output.velx, output.vely, output.psi, output.phi):
+    for field in (output.sdf, output.temperature, output.velx, output.vely, output.phi):
         assert torch.isfinite(field).all()
+
+
+def test_temperature_ansatz_uses_normalized_sat_temp(model):
+    # sim_params_dict carries sat_temp/heater wallTemp as physical values, but
+    # temperature_ansatz adds them directly to nn (the network's normalized output:
+    # field = sat_temp + interface_decay * nn). step() must normalize them first --
+    # otherwise output.temperature would be dominated by the raw physical value
+    # (tens of degrees) instead of staying in normalized units like every other field.
+    torch.manual_seed(0)
+    width = 64
+    with torch.no_grad():
+        # bias=False on the debed's Linear, so zeroing its only weight makes every
+        # raw head output (nn_sdf, nn_temp, ...) exactly 0 everywhere, independent of
+        # the input -- so interface_decay(sdf_physical=0) == 0 and nn == 0, and the
+        # (sdf==0) field term collapses to exactly sat_temp_normalized regardless of
+        # what the network would otherwise (arbitrarily, untrained) predict.
+        model.debed.linear.weight.zero_()
+
+    data = make_divfree_data(1, 2, 64, width)
+    sim_params = torch.randn(1, model.num_sim_params)
+    # A non-identity temp normalizer, so a physical-vs-normalized mixup actually
+    # produces a detectably wrong value instead of accidentally matching.
+    constants = NormalizerConstants(
+        max_domain_size=9.0, sdf_mean=0.0, sdf_std=1.0, absmax_temp=1.0,
+        temp_mean=10.0, temp_std=4.0, velx_mean=0.0, velx_std=1.0, vely_mean=0.0,
+        vely_std=1.0, psi_mean=0.0, psi_std=1.0, phi_mean=0.0, phi_std=1.0,
+    )
+    normalizer = _IdentityParamsNormalizer(constants)
+    sim_params_dict = {
+        "bulk_temp": 50.0, "sat_temp": 58.0,
+        "heater": {"wallTemp": 80.0, "xMin": 0.4, "xMax": 1.6},
+    }
+
+    with torch.no_grad():
+        output = model.step(
+            as_input(data), sim_params, normalizer, x_coords=x_coords_for(width),
+            sim_params_dict=[sim_params_dict],
+        )
+
+    expected_sat_temp_normalized = ((58.0 - 50.0) - constants.temp_mean) / constants.temp_std
+    # The last column (x far past heater xMax=1.6) is outside the heater band for
+    # every row, so the heater gate is ~1 there and the result reduces to the field
+    # value above.
+    far_from_heater = output.temperature[..., -1]
+    assert torch.allclose(
+        far_from_heater, torch.full_like(far_from_heater, expected_sat_temp_normalized), atol=1e-4
+    )
 
 
 def test_step_with_sdf_reinit_gate(model):
@@ -131,31 +201,80 @@ def test_step_with_sdf_reinit_gate(model):
     sim_params = torch.randn(batch_size, model.num_sim_params)
 
     with torch.no_grad():
-        output = model.step(as_input(data), sim_params, make_normalizer(), use_sdf_reinit=True)
+        output = model.step(
+            as_input(data), sim_params, make_normalizer(),
+            x_coords=x_coords_for(width), sim_params_dict=[temp_sim_params_dict()],
+            use_sdf_reinit=True,
+        )
 
     assert output.velx.shape == (batch_size, time, height, width + 1)
-    for field in (output.sdf, output.velx, output.vely, output.psi, output.phi):
+    for field in (output.sdf, output.velx, output.vely, output.phi):
         assert torch.isfinite(field).all()
 
 
+def test_step_uses_per_sample_sim_params_dict(model):
+    # Each batch element's temperature ansatz must use its own physical params --
+    # not sample 0's dict applied to the whole batch. make_batch/make_divfree_batch
+    # give every sample the identical dict, so this needs genuinely different dicts
+    # per sample to actually exercise per-sample indexing.
+    torch.manual_seed(0)
+    height, width = 64, 64
+    data0 = make_divfree_data(1, 2, height, width)
+    data1 = make_divfree_data(1, 2, height, width)
+    data = DivFreeData(
+        sdf=torch.cat([data0.sdf, data1.sdf]),
+        temperature=torch.cat([data0.temperature, data1.temperature]),
+        velx=torch.cat([data0.velx, data1.velx]),
+        vely=torch.cat([data0.vely, data1.vely]),
+        psi=torch.cat([data0.psi, data1.psi]),
+        phi=torch.cat([data0.phi, data1.phi]),
+    )
+    sim_params = torch.randn(2, model.num_sim_params)
+    normalizer = make_normalizer()
+    x_coords = x_coords_for(width)
+
+    dict0 = temp_sim_params_dict()
+    dict1 = {"bulk_temp": 35.0, "sat_temp": 40.0, "heater": {"wallTemp": 55.0, "xMin": -0.5, "xMax": 0.2}}
+
+    with torch.no_grad():
+        batched = model.step(
+            as_input(data), sim_params, normalizer, x_coords=x_coords,
+            sim_params_dict=[dict0, dict1],
+        )
+        solo0 = model.step(
+            as_input(data0), sim_params[:1], normalizer, x_coords=x_coords,
+            sim_params_dict=[dict0],
+        )
+        solo1 = model.step(
+            as_input(data1), sim_params[1:], normalizer, x_coords=x_coords,
+            sim_params_dict=[dict1],
+        )
+
+    assert torch.allclose(batched.temperature[0], solo0.temperature[0])
+    assert torch.allclose(batched.temperature[1], solo1.temperature[0])
+    # sanity: the two samples' physical params actually differ enough to matter.
+    assert not torch.allclose(batched.temperature[0], batched.temperature[1])
+
+
 @pytest.mark.parametrize("input_type", ["input", "batch"])
-def test_solenoidal_part_is_divergence_free(model, input_type):
-    # With no divergence source, the velocity is pure curl(psi), which is divergence
-    # free everywhere (div(curl) = 0 exactly on the MAC grid) regardless of the sdf.
+def test_leray_solenoidal_part_is_divergence_free(model, input_type):
+    # With use_leray, the solenoidal velocity (velx_sol/vely_sol) is the Leray projection
+    # of the raw predicted velocity, so it is divergence free everywhere regardless of the
+    # sdf or the divergence source (which only enters velx_dil).
     torch.manual_seed(0)
     batch_size, time, height, width = 1, 2, 64, 64
     with torch.no_grad():
-        model.debed_psi.conv_transpose.weight.normal_()  # nonzero solenoidal velocity
-        model.debed_div.conv_transpose.weight.zero_()    # no divergent part
+        model.debed.linear.weight.normal_()  # nonzero predicted velocity to project
     data = make_divfree_data(batch_size, time, height, width)
     sim_params = torch.randn(batch_size, model.num_sim_params)
 
     with torch.no_grad():
-        output = run_step(model, data, sim_params, make_normalizer(), input_type, use_div_gate=True)
+        output = run_step(model, data, sim_params, make_normalizer(), input_type, use_leray=True)
 
-    # velx/vely are the face velocities; the unit normalizer keeps them physical.
+    # The unit normalizer keeps velx_sol/vely_sol physical, so their MAC divergence is the
+    # Leray residual.
     divergence = divergence_centers_from_faces(
-        output.velx, output.vely, GRADIENT_SPACING, GRADIENT_SPACING
+        output.velx_sol, output.vely_sol, GRADIENT_SPACING, GRADIENT_SPACING
     )
     interior = divergence[..., :-1, :]  # drop the top outflow row
     assert interior.abs().max() < 1e-2
@@ -165,7 +284,7 @@ def make_divfree_batch(batch_size, time, height, width, num_sim_params) -> DivFr
     return DivFreeBatch(
         input=make_divfree_data(batch_size, time, height, width),
         target=make_divfree_data(batch_size, time, height, width),
-        sim_params=[{} for _ in range(batch_size)],
+        sim_params=[temp_sim_params_dict() for _ in range(batch_size)],
         dx=torch.full((batch_size,), GRADIENT_SPACING),
         dy=torch.full((batch_size,), GRADIENT_SPACING),
         sim_params_tensor=torch.randn(batch_size, num_sim_params),
@@ -230,8 +349,11 @@ def test_divfree_forecast_module(model):
 def _zero_output():
     return Nucleus2MoEDivFreeOutput(
         **{field: torch.zeros(1, 1, 4, 4) for field in
-           ("sdf", "temperature", "psi", "phi", "div_source")},
-        velx=torch.zeros(1, 1, 4, 5), vely=torch.zeros(1, 1, 5, 4), moe_outputs=[],
+           ("sdf", "temperature", "phi", "div_source", "gated_div_source")},
+        velx=torch.zeros(1, 1, 4, 5), vely=torch.zeros(1, 1, 5, 4),
+        velx_sol=torch.zeros(1, 1, 4, 5), vely_sol=torch.zeros(1, 1, 5, 4),
+        velx_dil=torch.zeros(1, 1, 4, 5), vely_dil=torch.zeros(1, 1, 5, 4),
+        moe_outputs=[],
     )
 
 
@@ -274,18 +396,18 @@ def test_field_loss_ignores_unsupervised_fields():
     output = _zero_output()
 
     supervised_fields = {
-        name for name in ("sdf", "temperature", "velx", "vely", "psi", "phi")
+        name for name in ("sdf", "temperature", "velx", "vely", "phi")
         if any(
             grid is getattr(output, name)
             for grid in module._loss_fields(output, _target())[0]
         )
     }
-    unsupervised = ({"sdf", "temperature", "velx", "vely", "psi", "phi"}
+    unsupervised = ({"sdf", "temperature", "velx", "vely", "phi"}
                     - supervised_fields)
 
     field_shape = {
         "sdf": (4, 4), "temperature": (4, 4), "velx": (4, 5),
-        "vely": (5, 4), "psi": (4, 4), "phi": (4, 4),
+        "vely": (5, 4), "phi": (4, 4),
     }
     for name in unsupervised:
         mismatch = _target(**{name: torch.ones(1, 1, *field_shape[name])})
@@ -306,21 +428,19 @@ def test_augment_preserves_field_shapes():
 
 def test_per_field_mae_logs_every_field():
     module = build_divfree_module()
-    output = Nucleus2MoEDivFreeOutput(
-        **{field: torch.zeros(1, 1, 4, 4) for field in
-           ("sdf", "temperature", "psi", "phi", "div_source")},
-        velx=torch.zeros(1, 1, 4, 5), vely=torch.zeros(1, 1, 5, 4), moe_outputs=[],
-    )
+    output = _zero_output()
     target = DivFreeData(
         sdf=torch.ones(1, 1, 4, 4), temperature=torch.ones(1, 1, 4, 4),
         velx=torch.ones(1, 1, 4, 5), vely=torch.ones(1, 1, 5, 4),
         psi=torch.ones(1, 1, 4, 4), phi=torch.ones(1, 1, 4, 4),
     )
     metrics = module._per_field_mae(output, target, "train")
-    # Every field is logged (even ones held out of the loss), plus the divergence source.
+    # Every field is logged, plus the auxiliary velx_sol/vely_sol/velx_dil/vely_dil
+    # and div_source targets.
     assert set(metrics) == {f"train/mae_{name}" for name in
-                            ("sdf", "temperature", "velx", "vely", "psi", "phi", "div_source")}
-    for name in ("sdf", "temperature", "velx", "vely", "psi", "phi"):
+                            ("sdf", "temperature", "velx", "vely",
+                             "velx_sol", "vely_sol", "velx_dil", "vely_dil", "div_source")}
+    for name in ("sdf", "temperature", "velx", "vely"):
         assert metrics[f"train/mae_{name}"] == pytest.approx(1.0)
     # The target velocity is spatially constant, so its divergence (the div_source
     # target) is zero, matching the zero prediction.
@@ -333,7 +453,7 @@ def test_forward_trajectory(model, trajectory_steps):
     batch_size, height, width = 1, 64, 64
     input_window = 8
     # forward_trajectory takes and returns a Trajectory with every field on its
-    # natural grid; psi/phi are recomputed from the velocity each step.
+    # natural grid.
     data = make_divfree_data(batch_size, input_window, height, width)
     initial_state = Trajectory(
         sdf=data.sdf, temp=data.temperature, velx=data.velx, vely=data.vely,
@@ -361,76 +481,6 @@ def test_forward_trajectory(model, trajectory_steps):
     assert trajectory.vely.shape[-2:] == (height + 1, width)
 
 
-def _save_base_checkpoint(tmp_path, embed_dim=32, num_heads=2, processor_blocks=1,
-                          num_experts=2, topk=1, moe_intermediate_dim=32, patch_size=16):
-    """Build an unconstrained nucleus2_moe with a trunk matching build_divfree_module's
-    and save its raw state dict, returning the path."""
-    from nucleus.models._api import get_model
-
-    base = get_model(
-        "nucleus2_moe", patch_size=patch_size, embed_dim=embed_dim, num_heads=num_heads,
-        processor_blocks=processor_blocks, num_experts=num_experts, topk=topk,
-        moe_intermediate_dim=moe_intermediate_dim, patching="Linear",
-        activation_dtype="float32",
-    )
-    path = str(tmp_path / "base.ckpt")
-    torch.save(base.state_dict(), path)
-    return base, path
-
-
-def test_warm_start_transfers_trunk_and_keeps_heads_at_init(tmp_path):
-    # A divfree module warm-started from an unconstrained base checkpoint should copy
-    # the shared transformer trunk (blocks + out_norm) and leave the resized
-    # embed/debed and the zero-init psi/phi heads untouched.
-    base, path = _save_base_checkpoint(tmp_path)
-    module = build_divfree_module(extra_overrides=(f"checkpoint_path={path}",))
-
-    base_state = base.state_dict()
-    warm_state = module.model.state_dict()
-
-    transferred, kept = [], []
-    for key, warm_tensor in warm_state.items():
-        if key == "_extra_state":
-            continue
-        if key in base_state and base_state[key].shape == warm_tensor.shape:
-            assert torch.equal(warm_tensor, base_state[key]), f"{key} was not transferred"
-            transferred.append(key)
-        else:
-            kept.append(key)
-
-    # The trunk (blocks/out_norm) transferred; the resized embed/debed and the
-    # divfree-only velocity heads (psi + the two divergent-velocity heads) stayed at
-    # their divfree init.
-    assert any(key.startswith("blocks.") for key in transferred)
-    assert any(key.startswith("out_norm") for key in transferred)
-    assert all(key.startswith(("debed_psi", "debed_div")) for key in kept if "debed_" in key and "debed." not in key)
-    assert any(key.startswith("embed.") for key in kept)
-
-    # The zero-init psi head is untouched by the warm start (the divergent heads init
-    # nonzero, so only psi is asserted zero here).
-    assert torch.count_nonzero(module.model.debed_psi.conv_transpose.weight) == 0
-
-    # The base checkpoint is recorded for reproducibility.
-    assert module.checkpoint_path == path
-
-
-def test_warm_start_from_lightning_checkpoint(tmp_path):
-    # The same transfer works from a Lightning-style checkpoint (state nested under
-    # "state_dict" with a "model." prefix).
-    base, _ = _save_base_checkpoint(tmp_path)
-    lightning_state = {f"model.{key}": value for key, value in base.state_dict().items()}
-    path = str(tmp_path / "lightning.ckpt")
-    torch.save({"state_dict": lightning_state}, path)
-
-    module = build_divfree_module(extra_overrides=(f"checkpoint_path={path}",))
-
-    base_state = base.state_dict()
-    a_block_key = next(key for key in module.model.state_dict() if key.startswith("blocks."))
-    assert torch.equal(module.model.state_dict()[a_block_key], base_state[a_block_key])
-    # The divfree config survives -- the base's _extra_state was not applied.
-    assert isinstance(module.model, Nucleus2MoEDivFree)
-
-
 def test_debed_diagnostics_cover_all_heads():
     # The per-head diagnostics should report a grad norm and a weight distribution for
     # each debed head. FlexAttention has no CPU backward, so populate the head gradients
@@ -443,7 +493,7 @@ def test_debed_diagnostics_cover_all_heads():
     scalar_log, histogram_log = module._debed_diagnostics(
         include_scalars=True, include_histograms=True
     )
-    for name in ("debed", "debed_psi", "debed_div"):
+    for name in ("debed",):
         assert f"train/{name}/grad_norm" in scalar_log
         assert scalar_log[f"train/{name}/grad_norm"] > 0
         assert torch.isfinite(scalar_log[f"train/{name}/grad_norm"])
@@ -456,44 +506,8 @@ def test_debed_diagnostics_cover_all_heads():
         include_scalars=True, include_histograms=False
     )
     assert empty_histograms == {}
-    assert "train/debed_psi/grad_norm" in scalars_only
-
-
-@pytest.mark.parametrize("scale", [1.0, 0.5, 1 / 32, 0.0])
-def test_scale_gradient_identity_forward_scaled_backward(scale):
-    # Forward is the identity; the backward gradient is multiplied by `scale`.
-    x = torch.randn(5, requires_grad=True)
-    y = scale_gradient(x, scale)
-    assert torch.allclose(y, x)
-    y.sum().backward()
-    assert torch.allclose(x.grad, torch.full_like(x, scale))
-
-
-def test_potential_grad_scale_defaults_to_dx(model):
-    # The knob defaults to dx (full cancellation of the 1/dx reconstruction gain).
-    assert model.config.potential_grad_scale == GRADIENT_SPACING
-
-
-def test_potential_grad_scale_leaves_forward_unchanged(model):
-    # scale_gradient is identity in forward, so the reconstructed velocity (and the
-    # returned raw potentials) must not depend on potential_grad_scale.
-    torch.manual_seed(0)
-    data = make_divfree_data(1, 2, 64, 64)
-    sim_params = torch.randn(1, model.num_sim_params)
-    normalizer = make_normalizer()
-
-    with torch.no_grad():
-        model.config.potential_grad_scale = 1.0
-        unscaled = model.step(as_input(data), sim_params, normalizer)
-        model.config.potential_grad_scale = GRADIENT_SPACING
-        scaled = model.step(as_input(data), sim_params, normalizer)
-
-    assert torch.allclose(unscaled.velx, scaled.velx, atol=1e-5)
-    assert torch.allclose(unscaled.vely, scaled.vely, atol=1e-5)
-    # The returned psi/phi are the raw head outputs (not routed through the scaler).
-    assert torch.equal(unscaled.psi, scaled.psi)
-    assert torch.equal(unscaled.phi, scaled.phi)
-
+    assert "train/debed/grad_norm" in scalars_only
+    
 
 def test_input_embedding_has_six_channels():
     # The embedding consumes sdf, temperature, and the four split face-velocity
@@ -514,15 +528,16 @@ def test_input_potentials_do_not_affect_output(model):
     sim_params = torch.randn(1, model.num_sim_params)
     normalizer = make_normalizer()
 
+    kwargs = dict(x_coords=x_coords_for(64), sim_params_dict=[temp_sim_params_dict()])
     with torch.no_grad():
-        baseline = model.step(as_input(data), sim_params, normalizer)
+        baseline = model.step(as_input(data), sim_params, normalizer, **kwargs)
         perturbed = DivFreeData(
             sdf=data.sdf, temperature=data.temperature, velx=data.velx, vely=data.vely,
             psi=torch.randn_like(data.psi), phi=torch.randn_like(data.phi),
         )
-        perturbed_output = model.step(as_input(perturbed), sim_params, normalizer)
+        perturbed_output = model.step(as_input(perturbed), sim_params, normalizer, **kwargs)
 
-    for name in ("sdf", "temperature", "velx", "vely", "psi", "phi"):
+    for name in ("sdf", "temperature", "velx", "vely", "phi"):
         assert torch.equal(getattr(baseline, name), getattr(perturbed_output, name)), name
 
 
@@ -534,17 +549,21 @@ def test_div_gate_confines_divergence_to_band(model):
     # training default) leaves divergence leaking outside the band.
     torch.manual_seed(0)
     with torch.no_grad():
-        model.debed.linear.weight.normal_(std=0.3)        # predicted sdf spans an interface
-        model.debed_psi.conv_transpose.weight.normal_()   # nonzero solenoidal part
-        model.debed_div.conv_transpose.weight.normal_()   # nonzero divergence source
+        # A nonzero debed makes the predicted sdf span an interface and the divergence
+        # source (the 5th debed channel) nonzero.
+        model.debed.linear.weight.normal_(std=0.3)
 
     data = make_divfree_data(1, 2, 64, 64)
     sim_params = torch.randn(1, model.num_sim_params)
     normalizer = make_normalizer()
 
+    # use_leray makes the solenoidal part divergence-free, so the total velocity's
+    # divergence equals the (gated) source -- otherwise the raw predicted velocity leaks
+    # its own divergence everywhere and the confinement can't be measured.
+    kwargs = dict(x_coords=x_coords_for(64), sim_params_dict=[temp_sim_params_dict()], use_leray=True)
     with torch.no_grad():
-        gated = model.step(as_input(data), sim_params, normalizer, use_div_gate=True)
-        ungated = model.step(as_input(data), sim_params, normalizer, use_div_gate=False)
+        gated = model.step(as_input(data), sim_params, normalizer, use_div_gate=True, **kwargs)
+        ungated = model.step(as_input(data), sim_params, normalizer, use_div_gate=False, **kwargs)
 
     # The band gate is built from the predicted (physical) sdf the model gated on.
     sdf_physical = normalizer.unnormalize_sdf(gated.sdf)
@@ -570,8 +589,8 @@ def test_div_gate_confines_divergence_to_band(model):
 
 
 def test_div_source_supervised_by_target_velocity_divergence():
-    # div_source enters the loss with a target computed from the target velocities:
-    # vel_std * divergence_centers_from_faces(target.velx, target.vely).
+    # div_source enters the loss with a target computed from the (normalized) target
+    # velocities: divergence_centers_from_faces(target.velx, target.vely).
     torch.manual_seed(0)
     module = build_divfree_module()
     output = _zero_output()  # div_source predicted as 0
@@ -581,7 +600,7 @@ def test_div_source_supervised_by_target_velocity_divergence():
 
     # The divergence source is the last (pred, target) pair in the loss.
     assert pred_grids[-1] is output.div_source
-    expected_target = module.normalizer.vel_std * divergence_centers_from_faces(
+    expected_target = divergence_centers_from_faces(
         target.velx, target.vely, GRADIENT_SPACING, GRADIENT_SPACING
     )
     assert torch.allclose(target_grids[-1], expected_target)
@@ -589,9 +608,36 @@ def test_div_source_supervised_by_target_velocity_divergence():
     assert (pred_grids[-1] - target_grids[-1]).abs().sum() > 0
 
 
+def test_sdf_sign_loss_handles_all_liquid_batch():
+    # The real config's sdf_mean is negative, so an all-zero normalized sdf
+    # unnormalizes to physical sdf < 0 everywhere (all liquid) -- no vapor pixels,
+    # so the num_liquid/num_vapor ratio is undefined and must be guarded rather
+    # than dividing by zero.
+    module = build_divfree_module()
+    loss = module._sdf_sign_loss(_zero_output(), _target())
+    assert torch.isfinite(loss)
+
+
+def test_sdf_sign_loss_weights_by_target_liquid_vapor_ratio():
+    module = build_divfree_module()
+    output = _zero_output()
+    sdf = torch.zeros(1, 1, 4, 4)
+    sdf[0, 0, 0, :3] = 5.0  # 3 cells normalize to a large-positive (vapor) physical sdf
+    target = _target(sdf=sdf)
+
+    sdf_physical = module.normalizer.unnormalize_sdf(sdf)
+    num_vapor = (sdf_physical > 0).sum()
+    num_liquid = sdf_physical.numel() - num_vapor
+    expected_weight = (num_liquid / num_vapor).item()
+    pred_sdf_physical = module.normalizer.unnormalize_sdf(output.sdf)
+    expected_loss = sdf_sign_bce_loss(pred_sdf_physical, sdf_physical, expected_weight)
+
+    assert torch.allclose(module._sdf_sign_loss(output, target), expected_loss)
+
+
 def test_step_use_mass_transfer_replaces_learned_source(model):
-    # use_mass_transfer swaps the learned debed_div output for the physics continuity
-    # source (mdot * n.grad(rho)); it needs the physical sim-param dict.
+    # use_mass_transfer swaps the learned divergence-source channel for the physics
+    # continuity source (mdot * n.grad(rho)); it needs the physical sim-param dict.
     torch.manual_seed(0)
     data = make_divfree_data(1, 2, 64, 64)
     sim_params = torch.randn(1, model.num_sim_params)
@@ -600,13 +646,18 @@ def test_step_use_mass_transfer_replaces_learned_source(model):
     sim_params_dict.update(
         {"stefan": 0.1, "inv_reynolds": 0.01, "prandtl": 1.0, "thcogas": 0.1, "rhogas": 0.01}
     )
-    sim_params_dict["heater"]["wallTemp"] = 80.0  # above bulk_temp so temp non-dim is sane
+    # above bulk_temp so temp non-dim is sane; xMin/xMax feed the temperature ansatz.
+    sim_params_dict["heater"].update({"wallTemp": 80.0, "xMin": 0.4, "xMax": 1.6})
+    x_coords = x_coords_for(64)
 
     with torch.no_grad():
-        learned = model.step(as_input(data), sim_params, normalizer)
-        physics = model.step(
+        learned = model.step(
             as_input(data), sim_params, normalizer,
-            use_mass_transfer=True, sim_params_dict=sim_params_dict,
+            x_coords=x_coords, sim_params_dict=[sim_params_dict],
+        )
+        physics = model.step(
+            as_input(data), sim_params, normalizer, x_coords=x_coords,
+            use_mass_transfer=True, sim_params_dict=[sim_params_dict],
         )
 
     assert physics.div_source.shape == learned.div_source.shape
@@ -615,6 +666,6 @@ def test_step_use_mass_transfer_replaces_learned_source(model):
     # The physics source is not the learned head output.
     assert not torch.allclose(physics.div_source, learned.div_source)
 
-    # Without the sim-param dict, mass transfer can't run.
+    # Without x_coords / the sim-param dict, step can't build the temperature ansatz.
     with torch.no_grad(), pytest.raises(AssertionError):
         model.step(as_input(data), sim_params, normalizer, use_mass_transfer=True)

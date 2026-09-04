@@ -21,15 +21,12 @@ def _truncate_trajectory(trajectory: Trajectory, num_steps: int) -> Trajectory:
     # forward_trajectory rolls in output-window blocks, so it can overshoot
     # trajectory_steps; keep the first num_steps frames, which align with the ground
     # truth window (the initial frames are the true input, the rest are predictions).
-    head = lambda field: field[:, :num_steps] if field is not None else None
     return Trajectory(
         sdf=trajectory.sdf[:, :num_steps],
         temp=trajectory.temp[:, :num_steps],
         velx=trajectory.velx[:, :num_steps],
         vely=trajectory.vely[:, :num_steps],
         sim_params=trajectory.sim_params,
-        psi=head(trajectory.psi),
-        phi=head(trajectory.phi),
     )
 
 def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int):
@@ -63,9 +60,9 @@ def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int)
                 vely=velfacey[window][None].to(device),
                 sim_params=[sim_params_dict],
             )
-            # The rolled prediction stays on its natural grids (velx/vely on faces,
-            # psi/phi on their grids) -- it is not averaged back to cell centers. The
-            # ground truth is built the same way for a like-for-like comparison.
+            # The rolled prediction stays on its natural grids (velx/vely on faces) --
+            # it is not averaged back to cell centers. The ground truth is built the
+            # same way for a like-for-like comparison.
             pred_trajectory: Trajectory = model.forward_trajectory(
                 initial_trajectory,
                 normalizer,
@@ -73,8 +70,10 @@ def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int)
                 input_time_window_size=8,
                 output_time_window_size=8,
                 trajectory_steps=trajectory_steps,
-                use_sdf_reinit=True,
-                clip_temp=True,
+                use_sdf_reinit=False,
+                clip_temp=False,
+                use_leray=True,
+                use_div_gate=True,
             )
             pred_trajectory = _truncate_trajectory(pred_trajectory, trajectory_steps)
             target_window = slice(cfg.start_time, cfg.start_time + trajectory_steps)
@@ -98,7 +97,7 @@ def run_test(cfg, model, normalizer, test_file_path: str, trajectory_steps: int)
                 trajectory_steps=trajectory_steps,
                 use_sdf_reinit=False,
                 return_moe_outputs=False,
-                clip_temp=True
+                clip_temp=False
             )
             pred_trajectory = convert_layout(pred_trajectory, target_layout="t h w c", source_layout=model.layout).squeeze(0)
             targets = gt_trajectory[cfg.start_time : cfg.start_time + trajectory_steps]

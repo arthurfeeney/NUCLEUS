@@ -16,18 +16,14 @@ from nucleus.utils.set_fp32_precision import set_fp32_precision
 def save_trajectory_as_hdf5(path, trajectory):
     with h5py.File(path, "w") as handle:
         if isinstance(trajectory, Trajectory):
-            # Natural-grid fields: velocities on their staggered faces, plus the
-            # Helmholtz potentials when present. Drop the leading batch dim.
+            # Natural-grid fields: velocities on their staggered faces. Drop the
+            # leading batch dim.
             fields = {
                 "dfun": trajectory.sdf,
                 "temperature": trajectory.temp,
                 "velfacex": trajectory.velx,
                 "velfacey": trajectory.vely,
             }
-            if trajectory.psi is not None:
-                fields["psi"] = trajectory.psi
-            if trajectory.phi is not None:
-                fields["phi"] = trajectory.phi
             for key, field in fields.items():
                 handle.create_dataset(key, data=field.squeeze(0).cpu().detach().numpy())
         else:
