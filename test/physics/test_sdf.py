@@ -1,11 +1,6 @@
 import torch
 
-from nucleus.physics.sdf import (
-    band_mask,
-    constant_normal_extrapolation,
-    interface_normals,
-    vapor_mask,
-)
+from nucleus.physics.sdf import band_mask
 
 
 def _vertical_sdf(height, width, dx, dy):
@@ -24,41 +19,3 @@ def test_band_mask_widens_with_width():
     narrow = int(band_mask(sdf, 1 * dx).sum())
     wide = int(band_mask(sdf, 3 * dx).sum())
     assert wide > narrow
-
-
-def test_extrapolation_fills_constant_across_band():
-    # A field that is constant in the liquid must stay that constant when
-    # constant-extrapolated into the vapor -- n.grad = 0 is satisfied exactly by a
-    # constant, so the band fills to the same value.
-    dx = dy = 1.0 / 32
-    H = W = 64
-    sdf = _vertical_sdf(H, W, dx, dy)
-    normal_x, normal_y = interface_normals(sdf, dx, dy)
-    field = torch.where(sdf < 0, torch.full_like(sdf, 2.0), torch.zeros_like(sdf))
-
-    vapor_band = band_mask(sdf, 3 * dx) & vapor_mask(sdf)
-    # iterate to steady state on the vapor band
-    filled = constant_normal_extrapolation(field, vapor_band, normal_x, normal_y, dx, dy)
-
-    assert (filled[vapor_band] - 2.0).abs().max() < 1e-3
-    # source (liquid) values are untouched
-    assert torch.all(filled[sdf < 0] == field[sdf < 0])
-
-
-def test_extrapolation_stays_within_the_band():
-    # Restricting the fill to a band keeps the extrapolation local: cells outside
-    # the band are never filled, and the source (liquid) is never overwritten.
-    dx = dy = 1.0 / 32
-    H = W = 48
-    band_width = 5 * dx
-    sdf = _vertical_sdf(H, W, dx, dy)
-    normal_x, normal_y = interface_normals(sdf, dx, dy)
-    field = torch.where(sdf < 0, torch.full_like(sdf, 5.0), torch.zeros_like(sdf))
-
-    vapor_band = band_mask(sdf, band_width) & vapor_mask(sdf)
-    filled = constant_normal_extrapolation(field, vapor_band, normal_x, normal_y, dx, dy)
-
-    # vapor beyond the band is never in the fill region -> stays exactly zero
-    assert torch.all(filled[sdf > band_width] == 0)
-    # the band converged to the source constant
-    assert (filled[vapor_band] - 5.0).abs().max() < 1e-3

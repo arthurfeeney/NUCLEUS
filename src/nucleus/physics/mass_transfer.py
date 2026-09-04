@@ -9,7 +9,6 @@ from nucleus.physics.sdf import (
     interface_mask,
     liquid_mask,
     vapor_mask,
-    constant_normal_extrapolation,
 )
 from nucleus.physics.temp_grad import vapor_temp_grad, liquid_temp_grad
 from nucleus.physics.extrapolate_flux import extrapolate_phase_flux
@@ -21,29 +20,7 @@ def interface_heatflux(
     temp: torch.Tensor, sdf: torch.Tensor, sat_temp, dx: float, dy: float,
     band_cells: int = DEFAULT_BAND_CELLS, wall_temp=None, eps: float = 1e-13,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Normal temperature gradient ``grad(T) . n`` on each side of the interface.
-
-    The two sides are what drives phase change: the Stefan condition balances the
-    conducted heat arriving from the liquid against that leaving into the vapor,
-    so they are returned separately rather than as a single jump.
-
-    Each side uses the ghost-fluid gradient of its own phase (``liquid_temp_grad``
-    / ``vapor_temp_grad``), so the gradient is not smeared by the other phase near
-    the interface, and both are projected onto the **same** normal ``n`` (from
-    ``interface_normals``, pointing liquid to vapor).
-
-    A phase's ghost-fluid gradient is only defined on that phase's cells, so the
-    two would otherwise have **disjoint** support -- the liquid side on liquid
-    cells, the vapor side on vapor cells -- and could not be subtracted at a common
-    cell. Each side is therefore constant-extrapolated along the normals into the
-    opposite phase over a ``band_cells``-wide band (``constant_normal_extrapolation``):
-    the liquid flux marches in ``+n`` into the vapor, the vapor flux in ``-n`` into
-    the liquid. Both then overlap on that band, where the Stefan jump
-    ``k_l dT/dn_l - k_v dT/dn_v`` is formed and masked back to the band.
-
-    Note this returns ``dT/dn``, not the flux itself: the physical heat flux is
-    ``q = -k dT/dn``, so scale each side by its own conductivity (and the sign)
-    when forming the Stefan balance.
+    """Normal temperature gradient ``grad(T) . n`` on each side of the liquid/vapor interface.
 
     Args:
         temp: cell-centered temperature, shape ``(..., H, W)``.
@@ -158,13 +135,6 @@ def continuity(
     eps: float = 1e-12,
 ) -> torch.Tensor:
     """Velocity-divergence source from phase change: ``mdot * (n . grad(rho))``.
-
-    Forms the mass-flux vector ``mdot * n`` (``n`` from ``interface_normals``,
-    pointing liquid to vapor) and dots it with ``grad(rho)``. ``rho`` here is the
-    cell-centered specific volume (liquid ``1.0``, vapor ``1/rhogas``) **smeared
-    over ~3 cells** with a smoothed Heaviside of the SDF, so ``grad(rho)`` (a
-    centered difference) spreads across a band rather than a single-cell spike. The
-    result should match the divergence of the velocity field.
 
     Args:
         temp: cell-centered temperature, shape ``(..., H, W)``.

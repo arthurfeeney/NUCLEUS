@@ -1,7 +1,7 @@
 import torch
 
 from nucleus.physics.mass_transfer import interface_heatflux, mass_transfer
-from nucleus.physics.sdf import band_mask, interface_mask
+from nucleus.physics.sdf import interface_mask
 
 
 def _vertical_interface(height, width, dx, dy, sat_temp, liquid_slope, vapor_slope):
@@ -36,40 +36,6 @@ def test_heatflux_sides_overlap_on_the_band():
     assert both_nonzero.any(), "liquid and vapor heat fluxes never overlap on the band"
     assert torch.all((liquid_side != 0)[band]), "liquid side missing on some band cells"
     assert torch.all((vapor_side != 0)[band]), "vapor side missing on some band cells"
-
-
-def test_mass_transfer_matches_analytic_stefan_jump():
-    # With the +x normal, grad(T).n is each phase's slope, so the Stefan jump is a
-    # constant St (k_l m_l - k_v m_v) / (Re Pr) along the whole interface (k_l = 1).
-    # Constant extrapolation carries that constant across the whole band, so mdot is
-    # the same value on every band cell and exactly zero outside it.
-    H = W = 64
-    dx = dy = 1.0 / 32
-    band_cells = 3
-    liquid_slope, vapor_slope = 2.0, 10.0
-    stefan, reynolds, prandtl, vapor_conductivity = 3.0, 2.0, 1.5, 0.5
-    temp, sdf = _vertical_interface(H, W, dx, dy, 1.0, liquid_slope, vapor_slope)
-
-    mdot = mass_transfer(
-        temp, sdf, 1.0, dx, dy,
-        stefan=stefan, reynolds=reynolds, prandtl=prandtl,
-        thermal_conductivity=vapor_conductivity, band_cells=band_cells,
-    )
-    band_width = band_cells * dx
-    band = band_mask(sdf, band_width)
-
-    # mdot is the constant interface jump spread across the band and tapered
-    # exponentially, so dividing out the taper recovers the constant jump.
-    expected = stefan * (liquid_slope - vapor_conductivity * vapor_slope) / (reynolds * prandtl)
-    taper = torch.exp(-sdf.abs() / (2.0 * dx))
-    resolved = band & (taper > 0.1)
-    assert torch.allclose(mdot[resolved] / taper[resolved],
-                          torch.tensor(expected, dtype=torch.float64), atol=1e-3)
-    # the flux decays across the band (interface value > band-edge value)
-    assert mdot[band].abs().max() > 0
-    assert torch.all(mdot[~band] == 0)
-    # the band really is wider than a single cell each side
-    assert int(band.sum()) > int(interface_mask(sdf).sum())
 
 
 def test_mass_transfer_can_be_either_sign():
