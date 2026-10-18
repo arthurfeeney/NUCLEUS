@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from nucleus.models.flashx_io import next_frames
+from nucleus.models.flashx_io import next_frames, num_cell_channels
 from nucleus.testing.flashx import random_batch
 
 
@@ -28,3 +28,12 @@ def test_next_frames_are_the_first_of_the_target_window(num_timesteps, target_ti
 def test_next_frames_rejects_windows_the_model_does_not_predict(num_timesteps, target_timesteps):
     with pytest.raises(ValueError, match="num_timesteps <= target_timesteps"):
         next_frames(_prediction(8), num_timesteps, target_timesteps)
+
+
+def test_a_face_field_takes_two_cell_channels_and_a_cell_field_one():
+    assert num_cell_channels(["dfun", "temperature"]) == 2
+    assert num_cell_channels(["dfun", "temperature", "velfacex", "velfacey"]) == 6
+    batch = random_batch(["dfun", "velfacex", "velfacey"], {}, batch_size=1)
+    assert batch.stack_field_cells(["dfun", "velfacex", "velfacey"]).shape[-1] == num_cell_channels(
+        ["dfun", "velfacex", "velfacey"]
+    )

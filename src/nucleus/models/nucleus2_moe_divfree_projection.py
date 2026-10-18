@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 from boiling_data.flashx.batch import FlashXBatch, unstack_field_cells
 from boiling_data.flashx.normalizer import NormalizerWrapper
 
-from nucleus.models.flashx_io import require_normalized
+from nucleus.models.flashx_io import num_cell_channels, require_normalized
 from nucleus.models.nucleus2_moe_base import Nucleus2MoEBase, Nucleus2MoEBaseConfig, config_from_dict, patch_debed
 from nucleus.physics.coordinates import CellCenteredGrid, cell_centered_grid
 from nucleus.physics.div_projection import div_projection
@@ -31,10 +31,8 @@ __all__ = [
 
 FIELD_NAMES = ("dfun", "temperature", "velfacex", "velfacey")
 FACE_FIELDS = ("velfacex", "velfacey")
-# sdf, temperature, and each face velocity split onto the low and high face of its
-# cells, as FlashXBatch.stack_field_cells lays them out
-NUM_INPUT_CHANNELS = 6
-# the input's channels, the face velocities' solenoidal part, and the divergence source
+NUM_INPUT_CHANNELS = num_cell_channels(FIELD_NAMES)
+# the input's channels and the divergence source
 NUM_OUTPUT_CHANNELS = NUM_INPUT_CHANNELS + 1
 
 
@@ -360,10 +358,10 @@ class Nucleus2MoEDivFreeProjection(Nucleus2MoEBase):
         return continuity_source(temp_physical, sdf_physical, physics) / self.velocity_scale()
 
     def model_step(self, cells: torch.Tensor, sim_params: torch.Tensor):
-        """cells: ``(B, T, H, W, 6)`` as FlashXBatch.stack_field_cells lays out
-        field_names. Returns the ``(B, T, H, W, 7)`` network output, which is sdf,
-        temperature, each cell's top, bottom, left and right face velocities, and the
-        divergence source, then the MoE outputs."""
+        """cells: ``(B, T, H, W, NUM_INPUT_CHANNELS)`` as FlashXBatch.stack_field_cells
+        lays out field_names. Returns the ``(B, T, H, W, NUM_OUTPUT_CHANNELS)`` network
+        output, which is sdf, temperature, each cell's top, bottom, left and right face
+        velocities, and the divergence source, then the MoE outputs."""
         _, _, h, w, _ = cells.shape
         x, moe_outputs = self.process(cells, sim_params)
         with record_function("debed"):

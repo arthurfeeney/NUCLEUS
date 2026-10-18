@@ -171,6 +171,10 @@ class Nucleus2MoEBase(nn.Module):
     num_sim_params = num_config_columns(NUCLEUS2_CONFIG_KEYS)
     # config fields that set how the model is run rather than what it learned
     runtime_options: Tuple[str, ...] = ()
+    # groups of fields the normalizer scales together, with no offset; a data-only
+    # model leaves it empty, so each field is normalized on its own.
+    # This is mostly for the face-velocities and the divergence free architecture
+    vector_fields: Tuple[Tuple[str, ...], ...] = ()
 
     def __init__(self, config: Nucleus2MoEBaseConfig, normalizer: NormalizerWrapper, in_channels: int):
         super().__init__()

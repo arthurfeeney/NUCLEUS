@@ -15,7 +15,7 @@ from nucleus.models.nucleus2_moe_divfree_projection import Nucleus2MoEDivFreePro
 from nucleus.physics.coordinates import CellCenteredGrid
 from nucleus.physics.poisson import divergence_centers_from_faces
 from nucleus.training.loop import Metrics, StepOutput
-from nucleus.training.modules.common import normalize_forecast_batch
+from nucleus.training.modules.common import normalize_forecast_batch, per_field_mae, pooled_l1_loss
 from nucleus.training.moe import moe_metrics, router_loss, update_router_bias
 from nucleus.training.push_forward import push_forward, sample_num_unrolls
 
@@ -64,13 +64,13 @@ class Nucleus2MoEDivFreeProjectionTraining(nn.Module):
         batch = push_forward(self._next_window, batch, num_unrolls, self.settings.target_timesteps)
         output = self.model(batch.input)
         pairs = self._prediction_target_pairs(output, batch.target)
-        data_loss = _data_loss(pairs)
+        data_loss = pooled_l1_loss(pairs)
         loss = data_loss + router_loss(
             output.moe_outputs, self.settings.load_balance_loss_weight, self.settings.z_loss_weight
         )
         update_router_bias(self.model, output.moe_outputs)
         metrics = {"train/loss": loss, "train/data_loss": data_loss, "train/num_unrolls": num_unrolls}
-        metrics |= _per_field_mae(pairs, "train") | moe_metrics(output.moe_outputs, "train")
+        metrics |= per_field_mae(pairs, "train") | moe_metrics(output.moe_outputs, "train")
         return StepOutput(loss, metrics)
 
     def validation_step(self, batch: FlashXForecastBatch) -> Metrics:
@@ -78,9 +78,9 @@ class Nucleus2MoEDivFreeProjectionTraining(nn.Module):
         target = batch.target.head_time_window(self.settings.target_timesteps)
         output = self.model(batch.input)
         pairs = self._prediction_target_pairs(output, target)
-        data_loss = _data_loss(pairs)
+        data_loss = pooled_l1_loss(pairs)
         metrics = {"val/loss": data_loss, "val/data_loss": data_loss}
-        return metrics | _per_field_mae(pairs, "val") | moe_metrics(output.moe_outputs, "val")
+        return metrics | per_field_mae(pairs, "val") | moe_metrics(output.moe_outputs, "val")
 
     @torch.no_grad()
     def gradient_metrics(self) -> Metrics:
@@ -105,13 +105,3 @@ class Nucleus2MoEDivFreeProjectionTraining(nn.Module):
         pairs = {name: (prediction.fields[name], target.fields[name]) for name in self.model.field_names}
         pairs["div_source"] = (output.div_source[:, window], target_div_source(target, output.grid))
         return pairs
-
-def _data_loss(pairs: Dict[str, Tuple[torch.Tensor, torch.Tensor]]) -> torch.Tensor:
-    """The mean absolute error over the cells of every predicted grid together."""
-    total_abs_error = sum((prediction - goal).abs().sum() for prediction, goal in pairs.values())
-    total_elements = sum(prediction.numel() for prediction, _ in pairs.values())
-    return total_abs_error / total_elements
-
-
-def _per_field_mae(pairs: Dict[str, Tuple[torch.Tensor, torch.Tensor]], prefix: str) -> Dict[str, torch.Tensor]:
-    return {f"{prefix}/mae_{name}": (prediction - goal).abs().mean().detach() for name, (prediction, goal) in pairs.items()}

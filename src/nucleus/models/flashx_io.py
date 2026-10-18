@@ -1,7 +1,7 @@
 import dataclasses
 from typing import Any, Dict, List, Mapping, Sequence
 
-from boiling_data.flashx.batch import FlashXBatch
+from boiling_data.flashx.batch import FACE_FIELD_AXES, FlashXBatch
 from boiling_data.flashx.normalizer import NormalizerWrapper
 
 # The conditioning parameters of the Nucleus2 models, by config group, in the order
@@ -29,6 +29,14 @@ def set_runtime_options(model: Any, params: Mapping[str, Any]) -> None:
 
 def num_config_columns(config_keys: Dict[str, List[str]]) -> int:
     return sum(len(names) for names in config_keys.values())
+
+
+def num_cell_channels(field_names: Sequence[str]) -> int:
+    """The channels FlashXBatch.stack_field_cells gives the named fields: one for a
+    cell-centered field, and two, its low and high face, for a face field.
+    This is the number of channels reuslting from converting a face grid to
+    a duplicated cell grid."""
+    return sum(2 if name in FACE_FIELD_AXES else 1 for name in field_names)
 
 
 def require_normalized(batch: FlashXBatch) -> None:

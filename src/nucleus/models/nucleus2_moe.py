@@ -32,8 +32,6 @@ class Nucleus2MoE(Nucleus2MoEBase):
     config_class = Nucleus2MoEConfig
     config_from_dict = staticmethod(_config_from_dict)
     field_names = ("dfun", "temperature", "velx", "vely")
-    # normalized with one shared scale and no offset, so a flip's sign change holds
-    vector_fields = (("velx", "vely"),)
 
     def __init__(self, config: Nucleus2MoEConfig, normalizer: NormalizerWrapper):
         super().__init__(config, normalizer, in_channels=len(self.field_names))

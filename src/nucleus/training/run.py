@@ -63,7 +63,7 @@ def build_model(cfg: DictConfig, device: torch.device) -> nn.Module:
     """The model with a normalizer read from the data config's statistics file."""
     model_class = get_model_class(cfg.model_cfg.name)
     normalizer = NormalizerWrapper.from_json(
-        cfg.data_cfg.statistics_path, vector_fields=getattr(model_class, "vector_fields", ())
+        cfg.data_cfg.statistics_path, vector_fields=model_class.vector_fields
     )
     model = get_model(cfg.model_cfg.name, normalizer, **_container(cfg.model_cfg.params)).to(device)
     if cfg.compile and device.type == "cuda":
