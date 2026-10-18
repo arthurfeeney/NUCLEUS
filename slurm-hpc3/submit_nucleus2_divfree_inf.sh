@@ -24,7 +24,7 @@ uv pip install -e .
 SPLIT_DIR=  # TODO: the split converted data
 
 # rollouts are written next to the checkpoint, in a rollouts directory
-CKPT=  # TODO: a last.pt or best.pt written by scripts/train/train_nucleus2_moe_divfree.py
+CKPT=  # TODO: a last.pt or best.pt written by scripts/train/train_nucleus2_moe_divfree_projection.py
 
 python scripts/rollout.py \
     checkpoint_path=$CKPT \

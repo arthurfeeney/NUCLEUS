@@ -28,5 +28,6 @@ CKPT=  # TODO: a last.pt or best.pt written by scripts/train/train_nucleus2_moe.
 
 python scripts/rollout.py \
     checkpoint_path=$CKPT \
+    model_cfg=nucleus2/nucleus2_experiment \
     split_dir=$SPLIT_DIR \
     trajectory_steps=1500

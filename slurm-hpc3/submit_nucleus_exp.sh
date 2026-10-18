@@ -24,7 +24,7 @@ uv pip install -e .
 # statistics.json that its scripts/bubbleml_statistics.py wrote for the train cases
 SPLIT_DIR=  # TODO: the split converted data
 
-python scripts/train/train_nucleus2_moe_divfree.py \
+python scripts/train/train_nucleus2_moe_divfree_projection.py \
     split_dir=$SPLIT_DIR \
     model_cfg.params.processor_blocks=8 \
     model_cfg.params.embed_dim=512 \

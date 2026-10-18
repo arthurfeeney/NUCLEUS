@@ -26,7 +26,7 @@ from boiling_data.flashx.batch import batch_from_simulation
 from matplotlib.axes import Axes
 from matplotlib.colors import SymLogNorm
 
-from nucleus.models.nucleus2_moe_divfree import DivFreePhysics, continuity_source, divfree_physics
+from nucleus.models.nucleus2_moe_divfree_projection import DivFreePhysics, continuity_source, divfree_physics
 from nucleus.physics.poisson import divergence_centers_from_faces
 
 FIELDS = ("dfun", "temperature", "velfacex", "velfacey")
@@ -106,8 +106,7 @@ def chunk_diagnostics(fields: dict[str, torch.Tensor], physics: DivFreePhysics) 
 
 def continuity_diagnostics(simulation: BoilingSimulation, frames: np.ndarray) -> Continuity:
     batch = batch_from_simulation(simulation, FIELDS, dtype=torch.float64)
-    height, width = batch.fields["dfun"].shape[-2:]
-    physics = divfree_physics(batch, height, width)
+    physics = divfree_physics(batch)
     chunks = []
     for start in range(0, len(frames), CHUNK_FRAMES):
         chunk_frames = torch.from_numpy(frames[start:start + CHUNK_FRAMES])
