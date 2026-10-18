@@ -107,7 +107,7 @@ A rollout needs only the trained checkpoint, which holds the model's config and 
 of the split is rolled out from its history frames and written as a BubbleML file in a `rollouts` directory next to the
 checkpoint, at the case's path within the split. The model's architecture comes from the checkpoint, but how it is
 run, such as the divfree model's physics options, comes from `model_cfg`, which must name the checkpoint's model; it
-defaults to `nucleus2/nucleus2_divfree`.
+defaults to `nucleus2/nucleus2_divfree_projection`.
 
 ```bash
 python scripts/rollout.py \
