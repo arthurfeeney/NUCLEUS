@@ -1,5 +1,3 @@
-import torch
-from torch.profiler import record_function
 from boiling_data.flashx.batch import FlashXBatch
 from boiling_data.flashx.normalizer import NormalizerWrapper
 
@@ -38,14 +36,3 @@ class Nucleus2MoEStaggered(Nucleus2MoEBase):
         require_normalized(batch)
         cells, moe_outputs = self.step(batch.stack_field_cells(self.field_names), batch.config_tensor())
         return Nucleus2MoEOutput(batch.from_stacked_field_cells(cells, self.field_names), moe_outputs)
-
-    def step(self, cells: torch.Tensor, sim_params: torch.Tensor):
-        """cells: ``(B, T, H, W, num_cell_channels(field_names))`` as
-        FlashXBatch.stack_field_cells lays out field_names, sim_params:
-        ``(B, num_sim_params)``. Returns the prediction, ``(B, T, H, W,
-        num_cell_channels(field_names))`` in the same layout, then the MoE outputs."""
-        _, _, height, width, _ = cells.shape
-        x, moe_outputs = self.process(cells, sim_params)
-        with record_function("debed"):
-            x = self.debed(x, target_shape=(height, width))
-        return x.to(torch.float32), moe_outputs

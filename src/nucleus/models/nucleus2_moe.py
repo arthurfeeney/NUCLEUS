@@ -1,6 +1,4 @@
 from dataclasses import dataclass
-import torch
-from torch.profiler import record_function
 from typing import List
 
 from nucleus.layers.moe.topk_moe import TopkMoEOutput
@@ -43,14 +41,3 @@ class Nucleus2MoE(Nucleus2MoEBase):
         output, moe_outputs = self.step(batch.stacked_fields(self.field_names), batch.config_tensor())
         prediction = batch.with_fields(dict(zip(self.field_names, output.unbind(-1))))
         return Nucleus2MoEOutput(prediction, moe_outputs)
-
-    def step(self, input: torch.Tensor, sim_params: torch.Tensor):
-        """
-        input: (B, T, H, W, C)
-        sim_params: (B, num_sim_params)
-        """
-        _, _, h, w, _ = input.shape
-        x, moe_outputs = self.process(input, sim_params)
-        with record_function("debed"):
-            x = self.debed(x, target_shape=(h, w))
-        return x.to(torch.float32), moe_outputs

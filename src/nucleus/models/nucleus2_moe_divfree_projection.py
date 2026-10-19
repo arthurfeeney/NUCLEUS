@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 import torch
 import torch.nn as nn
-from torch.profiler import record_function
 from typing import Optional, Tuple
 from boiling_data.flashx.batch import FlashXBatch, unstack_field_cells
 from boiling_data.flashx.normalizer import NormalizerWrapper
@@ -245,7 +244,7 @@ class Nucleus2MoEDivFreeProjection(Nucleus2MoEBase):
         # the spacing needs the raw configs and the grid of one field, so only dfun is unnormalized
         raw = self.normalizer.unnormalize(batch.with_fields({"dfun": batch.fields["dfun"]}))
         physics: DivFreePhysics = divfree_physics(raw, use_velocity_boundaries)
-        x, moe_outputs = self.model_step(batch.stack_field_cells(self.field_names), batch.config_tensor())
+        x, moe_outputs = self.step(batch.stack_field_cells(self.field_names), batch.config_tensor())
         nn_sdf, nn_temp, nn_vel_top, nn_vel_bot, nn_vel_left, nn_vel_right, nn_div_source = x.unbind(-1)
         faces = unstack_field_cells(
             torch.stack((nn_vel_left, nn_vel_right, nn_vel_bot, nn_vel_top), dim=-1), FACE_FIELDS
@@ -356,14 +355,3 @@ class Nucleus2MoEDivFreeProjection(Nucleus2MoEBase):
         """The normalized divergence source from phase change at the interface, from the
         temperature and sdf in the BubbleML files' units."""
         return continuity_source(temp_physical, sdf_physical, physics) / self.velocity_scale()
-
-    def model_step(self, cells: torch.Tensor, sim_params: torch.Tensor):
-        """cells: ``(B, T, H, W, NUM_INPUT_CHANNELS)`` as FlashXBatch.stack_field_cells
-        lays out field_names. Returns the ``(B, T, H, W, NUM_OUTPUT_CHANNELS)`` network
-        output, which is sdf, temperature, each cell's top, bottom, left and right face
-        velocities, and the divergence source, then the MoE outputs."""
-        _, _, h, w, _ = cells.shape
-        x, moe_outputs = self.process(cells, sim_params)
-        with record_function("debed"):
-            x = self.debed(x, target_shape=(h, w))
-        return x, moe_outputs
