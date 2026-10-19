@@ -15,7 +15,7 @@ SMALL_MODEL = dict(
 @pytest.fixture
 def model():
     torch.manual_seed(0)
-    normalizer = flashx_normalizer(Nucleus2MoE.field_names, vector_fields=[("velx", "vely")])
+    normalizer = flashx_normalizer(Nucleus2MoE.field_names)
     return get_model("nucleus2_moe", normalizer, **SMALL_MODEL)
 
 
@@ -64,7 +64,7 @@ def test_load_model_rebuilds_the_model_and_its_normalizer(model, tmp_path):
     loaded = load_model(path)
     assert isinstance(loaded, Nucleus2MoE)
     assert loaded.normalizer.statistics == model.normalizer.statistics
-    assert loaded.normalizer.vector_fields == [["velx", "vely"]]
+    assert loaded.normalizer.vector_fields == []
     for name, tensor in model.state_dict().items():
         if isinstance(tensor, torch.Tensor):
             torch.testing.assert_close(loaded.state_dict()[name], tensor)

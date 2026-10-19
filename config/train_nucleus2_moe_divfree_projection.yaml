@@ -9,8 +9,8 @@ seed: 42
 # run a few steps on whatever device is available, without wandb, checkpoints or
 # DataLoader worker processes, to check the training loop
 smoke: false
-# torch.compile the model's tensor step; only on CUDA. The divfree step's physics
-# reconstruction is not traceable with fullgraph.
+# torch.compile the model's tensor step; only on CUDA. The physics runs outside
+# the step, in forward, so it is not compiled.
 compile: false
 
 wandb:

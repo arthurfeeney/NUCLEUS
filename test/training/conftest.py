@@ -17,7 +17,7 @@ def differentiable_attention_on_cpu():
 @pytest.fixture
 def moe_training():
     torch.manual_seed(0)
-    normalizer = flashx_normalizer(Nucleus2MoE.field_names, vector_fields=[("velx", "vely")])
+    normalizer = flashx_normalizer(Nucleus2MoE.field_names)
     model = get_model(
         "nucleus2_moe", normalizer, patch_size=4, embed_dim=64, num_heads=2, processor_blocks=1,
         num_experts=2, topk=1, moe_intermediate_dim=32, patching="Linear",

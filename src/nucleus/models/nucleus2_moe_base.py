@@ -164,13 +164,17 @@ def patch_debed(config: Nucleus2MoEBaseConfig, out_channels: int) -> nn.Module:
 
 class Nucleus2MoEBase(nn.Module):
     """The patch embedding and transformer MoE blocks every nucleus2 model shares.
-    A derived model reads in_channels per cell, sets up its own output head, such
-    as patch_debed for however many channels it predicts, and sets config_class,
-    config_from_dict and field_names."""
+    A derived model reads in_channels per cell, sets up its own output head as
+    debed, such as patch_debed for however many channels it predicts, and sets
+    config_class, config_from_dict and field_names."""
     config_keys = NUCLEUS2_CONFIG_KEYS
     num_sim_params = num_config_columns(NUCLEUS2_CONFIG_KEYS)
     # config fields that set how the model is run rather than what it learned
     runtime_options: Tuple[str, ...] = ()
+    # groups of fields the normalizer scales together, with no offset; a data-only
+    # model leaves it empty, so each field is normalized on its own.
+    # This is mostly for the face-velocities and the divergence free architecture
+    vector_fields: Tuple[Tuple[str, ...], ...] = ()
 
     def __init__(self, config: Nucleus2MoEBaseConfig, normalizer: NormalizerWrapper, in_channels: int):
         super().__init__()
@@ -242,3 +246,13 @@ class Nucleus2MoEBase(nn.Module):
         with record_function("out_norm"):
             x = self.out_norm(x.to(self.debed_dtype) + embed.to(self.debed_dtype))
         return x, moe_outputs
+
+    def step(self, cells: torch.Tensor, sim_params: torch.Tensor) -> Tuple[torch.Tensor, List[TopkMoEOutput]]:
+        """cells: ``(B, T, H, W, in_channels)`` float32, sim_params: ``(B, num_sim_params)``.
+        Returns the output head's prediction, ``(B, T, H, W, out_channels)`` float32,
+        then the MoE output of every block."""
+        _, _, height, width, _ = cells.shape
+        tokens, moe_outputs = self.process(cells, sim_params)
+        with record_function("debed"):
+            prediction = self.debed(tokens, target_shape=(height, width))
+        return prediction.to(torch.float32), moe_outputs
