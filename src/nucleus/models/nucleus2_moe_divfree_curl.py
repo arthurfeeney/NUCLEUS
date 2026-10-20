@@ -122,6 +122,9 @@ class Nucleus2MoEDivFreeCurl(Nucleus2MoEBase):
         """batch: normalized, holding field_names and a config tensor of config_keys.
         A physics option left as `None` will use the value set in the model's config."""
         require_normalized(batch)
+        # the curl and the Poisson solve act on normalized velocities, which is only
+        # exact when both components share one scale and no offset
+        velocity_scale = self.velocity_scale()
         use_sdf_reinit = self._option(use_sdf_reinit, "use_sdf_reinit")
         use_div_gate = self._option(use_div_gate, "use_div_gate")
         use_mass_transfer = self._option(use_mass_transfer, "use_mass_transfer")
@@ -148,7 +151,7 @@ class Nucleus2MoEDivFreeCurl(Nucleus2MoEBase):
             temp_physical = self.normalizer.unnormalize_field("temperature", temp)
             div_source = continuity_source(
                 temp_physical.to(torch.float64), sdf_physical.detach().to(torch.float64), physics
-            ) / self.velocity_scale()
+            ) / velocity_scale
         else:
             div_source = nn_div_source
 

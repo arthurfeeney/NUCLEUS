@@ -112,6 +112,16 @@ def test_mass_transfer_replaces_the_learned_source(model):
     torch.testing.assert_close(physics.gated_div_source, physics.div_source)
 
 
+@pytest.mark.parametrize("use_mass_transfer", [False, True])
+def test_forward_needs_velocities_normalized_as_one_vector(use_mass_transfer):
+    statistics = flashx_statistics(FIELD_NAMES)
+    statistics["fields"]["velfacey"]["std"] = 3.0
+    model = _model(statistics)
+    model.normalizer.vector_fields = []
+    with pytest.raises(ValueError, match="vector_fields"):
+        _run(model, _normalized_batch(model), use_mass_transfer=use_mass_transfer)
+
+
 def test_gradients_are_finite(model):
     with reference_natten():
         output = model(_normalized_batch(model))
