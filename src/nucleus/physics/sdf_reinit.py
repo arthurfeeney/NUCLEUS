@@ -4,6 +4,10 @@ import torch
 
 from nucleus.physics.guard_cells import add_level_set_halo
 
+# inside the gradient magnitudes' sqrt, whose gradient is infinite at zero; zero
+# upwind differences are common, and inf * 0 makes the backward pass NaN
+SQRT_EPS = 1e-12
+
 def sdf_reinit_drift(
     sdf_before: torch.Tensor,
     sdf_after:  torch.Tensor,
@@ -93,8 +97,8 @@ def _distance_to_interface(padded: torch.Tensor, dx: float, dy: float) -> torch.
     for low, high, scale in ((-1, 1, 2.0), (0, 1, 1.0), (-1, 0, 1.0)):
         grad_x = (_neighbor(padded, -1, high) - _neighbor(padded, -1, low)) / (scale * dx)
         grad_y = (_neighbor(padded, -2, high) - _neighbor(padded, -2, low)) / (scale * dy)
-        estimates.append(torch.sqrt(grad_x**2 + grad_y**2))
-    grad_mag = torch.stack(estimates).amax(dim=0).clamp_min(1e-12)
+        estimates.append(torch.sqrt(grad_x**2 + grad_y**2 + SQRT_EPS))
+    grad_mag = torch.stack(estimates).amax(dim=0)
     return _neighbor(padded, -1, 0) / grad_mag
 
 
@@ -109,4 +113,4 @@ def _godunov_grad_mag(padded: torch.Tensor, sign: torch.Tensor, dx: float, dy: f
         outward = torch.maximum(torch.relu(backward) ** 2, torch.relu(-forward) ** 2)
         inward = torch.maximum(torch.relu(-backward) ** 2, torch.relu(forward) ** 2)
         terms.append(torch.where(sign > 0, outward, inward))
-    return torch.sqrt(terms[0] + terms[1])
+    return torch.sqrt(terms[0] + terms[1] + SQRT_EPS)
