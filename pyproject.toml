@@ -34,7 +34,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "black",
     "pytest",
     "ruff"
 ]
@@ -97,9 +96,4 @@ name = "natten"
 url = "https://whl.natten.org"
 explicit = true
 format = "flat"
-
-[tool.black]
-line-length = 100
-target-version = ['py310']
-include = '\.pyi?$'
 
