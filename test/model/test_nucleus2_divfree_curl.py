@@ -63,24 +63,24 @@ def test_forward_predicts_every_field_on_its_natural_grid(model):
         assert torch.isfinite(output.prediction.fields[name]).all()
     assert output.prediction.is_normalized
     batch_size, timesteps, height, width = batch.fields["dfun"].shape
-    assert output.stream_function.shape == (batch_size, timesteps, height + 1, width + 1)
+    assert output.psi_nodes.shape == (batch_size, timesteps, height + 1, width + 1)
     assert output.div_source.shape == batch.fields["dfun"].shape
 
 
 def test_the_velocity_is_the_solenoidal_plus_the_dilatational_velocity(model):
     output = _run(model, _normalized_batch(model))
     torch.testing.assert_close(
-        output.prediction.fields["velfacex"], output.solenoidal_velx + output.dilatational_velx
+        output.prediction.fields["velfacex"], output.solenoidal_velx_faces + output.dilatational_velx_faces
     )
     torch.testing.assert_close(
-        output.prediction.fields["velfacey"], output.solenoidal_vely + output.dilatational_vely
+        output.prediction.fields["velfacey"], output.solenoidal_vely_faces + output.dilatational_vely_faces
     )
 
 
 def test_the_solenoidal_velocity_is_divergence_free(model):
     output = _run(model, _normalized_batch(model))
-    assert output.solenoidal_velx.abs().max() > 0.1
-    divergence = _divergence(output.solenoidal_velx, output.solenoidal_vely, output.grid)
+    assert output.solenoidal_velx_faces.abs().max() > 0.1
+    divergence = _divergence(output.solenoidal_velx_faces, output.solenoidal_vely_faces, output.grid)
     assert divergence.abs().max() < 1e-3
 
 

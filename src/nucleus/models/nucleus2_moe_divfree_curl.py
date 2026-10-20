@@ -58,11 +58,11 @@ class Nucleus2MoEDivFreeCurlConfig(Nucleus2MoEBaseConfig):
 class Nucleus2MoEDivFreeCurlOutput:
     prediction: FlashXBatch
     # (B, T, H + 1, W + 1) on the nodes, in normalized velocity times the cell width dx
-    stream_function: torch.Tensor
-    solenoidal_velx: torch.Tensor  # (B, T, H, W + 1), the curl of the stream function
-    solenoidal_vely: torch.Tensor  # (B, T, H + 1, W)
-    dilatational_velx: torch.Tensor  # (B, T, H, W + 1), the gradient of the potential whose laplacian is gated_div_source
-    dilatational_vely: torch.Tensor  # (B, T, H + 1, W)
+    psi_nodes: torch.Tensor
+    solenoidal_velx_faces: torch.Tensor  # (B, T, H, W + 1), the curl of the stream function
+    solenoidal_vely_faces: torch.Tensor  # (B, T, H + 1, W)
+    dilatational_velx_faces: torch.Tensor  # (B, T, H, W + 1), the gradient of the potential whose laplacian is gated_div_source
+    dilatational_vely_faces: torch.Tensor  # (B, T, H + 1, W)
     div_source: torch.Tensor  # (B, T, H, W), the network's or the continuity equation's
     gated_div_source: torch.Tensor  # (B, T, H, W), div_source zeroed away from interfaces with use_div_gate
     moe_outputs: List[TopkMoEOutput]
@@ -81,18 +81,17 @@ def nodes_from_cell_corners(corners: torch.Tensor) -> torch.Tensor:
     return total / count
 
 
-def solenoidal_velocity(stream_function: torch.Tensor, grid: CellCenteredGrid) -> Tuple[torch.Tensor, torch.Tensor]:
+def solenoidal_velocity(psi_nodes: torch.Tensor, grid: CellCenteredGrid) -> Tuple[torch.Tensor, torch.Tensor]:
     # the stream function is in normalized velocity times a cell width
-    psi = stream_function.to(torch.float64) * grid.dx
-    return curl_faces_from_nodes(psi, grid.dx, grid.dy)
+    return curl_faces_from_nodes(psi_nodes.to(torch.float64) * grid.dx, grid.dx, grid.dy)
 
 
 def dilatational_velocity(div_source: torch.Tensor, grid: CellCenteredGrid) -> Tuple[torch.Tensor, torch.Tensor]:
     """The float64 face velocity grad(phi), where laplacian(phi) = div_source with
     Neumann walls and a Dirichlet top outflow, so its divergence is div_source."""
     # float64 keeps the DCT-based solve's residual well below float32 noise
-    potential = solve_poisson_neumann_dirichlet(div_source.to(torch.float64), grid.dx, grid.dy)
-    return grad_faces_from_centers(potential, grid.dx, grid.dy)
+    phi_centers = solve_poisson_neumann_dirichlet(div_source.to(torch.float64), grid.dx, grid.dy)
+    return grad_faces_from_centers(phi_centers, grid.dx, grid.dy)
 
 
 def _config_from_dict(config_dict: dict) -> Nucleus2MoEDivFreeCurlConfig:
@@ -131,7 +130,8 @@ class Nucleus2MoEDivFreeCurl(Nucleus2MoEBase):
         grid = physics.grid
         network, moe_outputs = self.step(batch.stack_field_cells(self.field_names), batch.config_tensor())
         nn_sdf, nn_temp = network[..., 0], network[..., 1]
-        stream_function = nodes_from_cell_corners(network[..., 2:2 + len(CORNER_OFFSETS)])
+        psi_corners = network[..., 2:2 + len(CORNER_OFFSETS)]
+        psi_nodes = nodes_from_cell_corners(psi_corners)
         nn_div_source = network[..., -1]
 
         nn_sdf_physical = self.normalizer.unnormalize_field("dfun", nn_sdf)
@@ -157,21 +157,21 @@ class Nucleus2MoEDivFreeCurl(Nucleus2MoEBase):
         else:
             gated_div_source = div_source
 
-        solenoidal_velx, solenoidal_vely = solenoidal_velocity(stream_function, grid)
-        dilatational_velx, dilatational_vely = dilatational_velocity(gated_div_source, grid)
+        solenoidal_velx_faces, solenoidal_vely_faces = solenoidal_velocity(psi_nodes, grid)
+        dilatational_velx_faces, dilatational_vely_faces = dilatational_velocity(gated_div_source, grid)
         prediction = batch.with_fields({
             "dfun": self.normalizer.normalize_field("dfun", sdf_physical).to(torch.float32),
             "temperature": temp.to(torch.float32),
-            "velfacex": (solenoidal_velx + dilatational_velx).to(torch.float32),
-            "velfacey": (solenoidal_vely + dilatational_vely).to(torch.float32),
+            "velfacex": (solenoidal_velx_faces + dilatational_velx_faces).to(torch.float32),
+            "velfacey": (solenoidal_vely_faces + dilatational_vely_faces).to(torch.float32),
         })
         return Nucleus2MoEDivFreeCurlOutput(
             prediction=prediction,
-            stream_function=stream_function.to(torch.float32),
-            solenoidal_velx=solenoidal_velx.to(torch.float32),
-            solenoidal_vely=solenoidal_vely.to(torch.float32),
-            dilatational_velx=dilatational_velx.to(torch.float32),
-            dilatational_vely=dilatational_vely.to(torch.float32),
+            psi_nodes=psi_nodes.to(torch.float32),
+            solenoidal_velx_faces=solenoidal_velx_faces.to(torch.float32),
+            solenoidal_vely_faces=solenoidal_vely_faces.to(torch.float32),
+            dilatational_velx_faces=dilatational_velx_faces.to(torch.float32),
+            dilatational_vely_faces=dilatational_vely_faces.to(torch.float32),
             div_source=div_source.to(torch.float32),
             gated_div_source=gated_div_source.to(torch.float32),
             moe_outputs=moe_outputs,
