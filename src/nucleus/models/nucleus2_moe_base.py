@@ -9,7 +9,6 @@ from rotary_embedding_torch import RotaryEmbedding
 from boiling_data.flashx.batch import FlashXBatch
 from boiling_data.flashx.normalizer import NormalizerWrapper
 
-from nucleus.layers.adaptive_layernorm import AdaptiveLayerNorm
 from nucleus.layers.attention import NeighborhoodAttention
 from nucleus.layers.moe.topk_moe import TopkMoE, TopkMoEOutput, TopkRouterWithBias
 from nucleus.layers.droppath import DropPath
@@ -29,6 +28,7 @@ from nucleus.models.flashx_io import (
 )
 
 __all__ = [
+    "AdaptiveLayerNorm",
     "Nucleus2MoEBase",
     "Nucleus2MoEBaseConfig",
     "TransformerMoEBlock",
@@ -93,8 +93,39 @@ def get_dtype(dtype):
     return dtype
 
 
+class AdaptiveLayerNorm(nn.Module):
+    """A LayerNorm whose per-channel scale and shift, ``(1 + gamma) * norm(x) + beta``,
+    are a linear map of a per-sample conditioning vector."""
+
+    def __init__(self, embed_dim: int, conditioning_dim: int, dtype: torch.dtype, eps: float = 1e-6):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.dtype = dtype
+        self.norm = nn.LayerNorm(embed_dim, eps=eps, elementwise_affine=False)
+        # The conditioning is not normalized: a LayerNorm would discard its magnitude,
+        # so runs differing along one direction of parameters would only differ in sign.
+        self.modulation = nn.Linear(conditioning_dim, embed_dim * 2)
+        # gamma = beta = 0, so a new layer is a plain LayerNorm
+        nn.init.zeros_(self.modulation.weight)
+        nn.init.zeros_(self.modulation.bias)
+
+    def forward(self, x: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
+        """x: ``(B, ..., embed_dim)``, conditioning: ``(B, conditioning_dim)`` float32."""
+        if x.shape[-1] != self.embed_dim:
+            raise ValueError(f"Expected last dim {self.embed_dim}, got {x.shape[-1]}")
+        if conditioning.shape[0] != x.shape[0]:
+            raise ValueError(
+                f"Batch size of x and conditioning must match ({x.shape[0]} vs {conditioning.shape[0]})"
+            )
+        assert conditioning.dtype == torch.float32
+        # computed in float32, then applied in dtype
+        gamma, beta = self.modulation(conditioning).to(self.dtype).chunk(2, dim=-1)
+        broadcast_shape = [conditioning.shape[0]] + [1] * (x.ndim - 2) + [self.embed_dim]
+        return (1 + gamma.view(broadcast_shape)) * self.norm(x) + beta.view(broadcast_shape)
+
+
 class TransformerMoEBlock(nn.Module):
-    def __init__(self, config: Nucleus2MoEBaseConfig, num_sim_params: int, drop_path_prob: float):
+    def __init__(self, config: Nucleus2MoEBaseConfig, drop_path_prob: float):
         super().__init__()
 
         self.activation_dtype = get_dtype(config.activation_dtype)
@@ -103,8 +134,12 @@ class TransformerMoEBlock(nn.Module):
 
         self.drop_path = DropPath(drop_path_prob)
 
-        self.attention_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, dtype=self.attention_dtype)
-        self.mlp_norm = AdaptiveLayerNorm(config.embed_dim, num_sim_params, self.moe_dtype)
+        self.attention_norm = AdaptiveLayerNorm(
+            config.embed_dim, conditioning_dim=config.embed_dim, dtype=self.attention_dtype
+        )
+        self.mlp_norm = AdaptiveLayerNorm(
+            config.embed_dim, conditioning_dim=config.embed_dim, dtype=self.moe_dtype
+        )
 
         self.router = TopkRouterWithBias(
             config.num_experts,
@@ -124,27 +159,27 @@ class TransformerMoEBlock(nn.Module):
             router=self.router
         )
 
-    def _attention(self, x: torch.Tensor, freqs: torch.Tensor, sim_params: torch.Tensor) -> torch.Tensor:
+    def _attention(self, x: torch.Tensor, freqs: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
         with record_function("attention"):
             h = x.to(self.attention_dtype)
-            h = self.attention_norm(h, sim_params)
+            h = self.attention_norm(h, conditioning)
             h = self.attention(h, freqs)
             h = self.drop_path(h)
             x = x + h.to(self.activation_dtype)
         return x
 
-    def _mlp(self, x: torch.Tensor, sim_params: torch.Tensor):
+    def _mlp(self, x: torch.Tensor, conditioning: torch.Tensor):
         with record_function("moe"):
             h = x.to(self.moe_dtype)
-            h = self.mlp_norm(h, sim_params)
+            h = self.mlp_norm(h, conditioning)
             moe_output: TopkMoEOutput = self.mlp(h)
             h = self.drop_path(moe_output.out)
             x = x + h.to(self.activation_dtype)
         return x, moe_output
 
-    def forward(self, x: torch.Tensor, freqs: torch.Tensor, sim_params: torch.Tensor):
-        x = self._attention(x, freqs, sim_params)
-        x, moe_output = self._mlp(x, sim_params)
+    def forward(self, x: torch.Tensor, freqs: torch.Tensor, conditioning: torch.Tensor):
+        x = self._attention(x, freqs, conditioning)
+        x, moe_output = self._mlp(x, conditioning)
         return x, moe_output
 
 
@@ -160,6 +195,20 @@ def patch_debed(config: Nucleus2MoEBaseConfig, out_channels: int) -> nn.Module:
     if config.patching == "Linear":
         return LinearDebed(patch_size=config.patch_size, embed_dim=config.embed_dim, out_channels=out_channels)
     return AdaptiveDebed(in_channels=config.embed_dim, out_channels=out_channels, patch_shape=(16, 16))
+
+
+def _sim_params_embed(config: Nucleus2MoEBaseConfig, num_sim_params: int) -> nn.Module:
+    """Maps ``(B, num_sim_params)`` sim params to the ``(B, embed_dim)`` conditioning
+    every block's AdaptiveLayerNorm modulates from, shared so the modulation can
+    depend on the sim params nonlinearly."""
+    # the trailing SiLU is the activation DiT applies before each adaLN modulation,
+    # applied once here since every block shares the conditioning
+    return nn.Sequential(
+        nn.Linear(num_sim_params, config.embed_dim),
+        nn.SiLU(),
+        nn.Linear(config.embed_dim, config.embed_dim),
+        nn.SiLU(),
+    )
 
 
 class Nucleus2MoEBase(nn.Module):
@@ -192,11 +241,11 @@ class Nucleus2MoEBase(nn.Module):
             seq_before_head_dim=True
         )
 
+        self.sim_params_embed = _sim_params_embed(config, self.num_sim_params)
         drop_path_probs = torch.linspace(0.0, 0.1, config.processor_blocks)
         self.blocks = nn.ModuleList([
             TransformerMoEBlock(
                 config=config,
-                num_sim_params=self.num_sim_params,
                 drop_path_prob=drop_path_probs[idx].item(),
             )
             for idx in range(config.processor_blocks)
@@ -237,10 +286,13 @@ class Nucleus2MoEBase(nn.Module):
                 _, embed_t, embed_h, embed_w, _ = embed.shape
                 rotary_freqs = self.rotary_emb.get_axial_freqs(embed_t, embed_h, embed_w)[None, :, :, :, None, :]
 
+        with record_function("sim_params_embed"):
+            conditioning = self.sim_params_embed(sim_params)
+
         moe_outputs = []
         for idx, blk in enumerate(self.blocks):
             with record_function(f"block_{idx}"):
-                x, moe_output = blk(x, rotary_freqs, sim_params)
+                x, moe_output = blk(x, rotary_freqs, conditioning)
                 moe_outputs.append(moe_output)
 
         with record_function("out_norm"):
