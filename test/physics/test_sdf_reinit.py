@@ -92,3 +92,15 @@ def test_sussman_only_redistances_cells_within_the_reinit_band():
     deep_inside = steep.abs() < reinit_band - 2 * dx
     torch.testing.assert_close(banded[deep_inside], full[deep_inside])
     assert not torch.allclose(banded[~outside], steep[~outside])
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_sussman_gradients_are_finite_where_the_level_set_is_flat(dtype):
+    phi_true, dx = make_circle_sdf(n=32, extent=2.0)
+    # a flat block has zero one-sided differences, so the gradient magnitudes take
+    # sqrt(0), whose infinite gradient times the zero difference's gradient is NaN
+    phi = (1.5 * phi_true).to(dtype)
+    phi[:, :8] = -1.0
+    phi.requires_grad_()
+    sdf_reinit_sussman(phi, dx=dx, n_iter=5).sum().backward()
+    assert torch.isfinite(phi.grad).all()

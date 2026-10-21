@@ -1,6 +1,7 @@
 from .nucleus2_moe import Nucleus2MoE, Nucleus2MoEConfig, Nucleus2MoEOutput
 from .nucleus2_moe_staggered import Nucleus2MoEStaggered, Nucleus2MoEStaggeredConfig
 from .nucleus2_moe_divfree_projection import Nucleus2MoEDivFreeProjection, Nucleus2MoEDivFreeProjectionConfig, Nucleus2MoEDivFreeProjectionOutput
+from .nucleus2_moe_divfree_curl import Nucleus2MoEDivFreeCurl, Nucleus2MoEDivFreeCurlConfig, Nucleus2MoEDivFreeCurlOutput
 from ._api import (
     register_model,
     list_models,
