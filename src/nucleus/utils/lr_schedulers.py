@@ -13,17 +13,20 @@ class CosineWarmupLR(SequentialLR):
         eta_min (float): Minimum learning rate
     """
     def __init__(self, optimizer, warmup_iters, max_iters, eta_min=0, last_epoch=-1):
-        # Initialize the CosineAnnealingLR scheduler with the optimizer and the max_iters
         super().__init__(
             optimizer,
             schedulers=[
+                # step + 1, so the first step trains rather than running at lr = 0, and
+                # the max keeps a warmup of 0 iterations from dividing by zero
                 LambdaLR(
                     optimizer,
-                    lr_lambda=lambda step: step / warmup_iters
+                    lr_lambda=lambda step: min(1.0, (step + 1) / max(warmup_iters, 1))
                 ),
+                # the cosine starts after the warmup, so it spans only the remaining
+                # iterations and reaches eta_min at max_iters
                 CosineAnnealingLR(
                     optimizer,
-                    T_max=max_iters,
+                    T_max=max_iters - warmup_iters,
                     eta_min=eta_min,
                     last_epoch=last_epoch
                 ),
