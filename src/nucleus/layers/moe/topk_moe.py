@@ -194,10 +194,11 @@ class TopkRouterWithBias(RouterBase):
         assert tokens_per_expert.dim() == 1, "Expert counts must be of shape (num_experts,)"
         total_tokens = tokens_per_expert.sum().float()
         load_ratio = tokens_per_expert / total_tokens
-        increase_mask = load_ratio < self.target_load_ratio
-        decrease_mask = ~increase_mask
-        self.router_bias[increase_mask] += self.router_bias_update_rate
-        self.router_bias[decrease_mask] -= self.router_bias_update_rate
+        # torch.where rather than boolean-mask indexing, which reads the mask back to
+        # the host and so waits for the GPU
+        self.router_bias += torch.where(
+            load_ratio < self.target_load_ratio, self.router_bias_update_rate, -self.router_bias_update_rate
+        )
     
     def forward(self, x):
         router_output = super().forward(x, self.router_bias)

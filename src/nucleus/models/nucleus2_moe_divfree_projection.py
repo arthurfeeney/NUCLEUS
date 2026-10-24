@@ -145,8 +145,9 @@ def divfree_physics(raw: FlashXBatch, velocity_boundaries: bool = False) -> DivF
         rhogas=parameter("non_dimensional", "rhogas"),
         grid=cell_centered_grid(
             raw.parameter("discretization", "x_min"),
-            shared_spacing(raw.dx("dfun"), "dx"),
-            shared_spacing(raw.dy("dfun"), "dy"),
+            # on the CPU, as reading a spacing back from a GPU waits for the GPU
+            shared_spacing(raw.dx("dfun", device=torch.device("cpu")), "dx"),
+            shared_spacing(raw.dy("dfun", device=torch.device("cpu")), "dy"),
             raw.fields["dfun"].shape[-1],
         ),
         velocity_boundaries=(

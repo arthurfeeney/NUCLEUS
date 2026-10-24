@@ -1,9 +1,12 @@
 import os
 import random
 import subprocess
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
+
+from torch.utils.data import DataLoader
 
 import numpy as np
 import torch
@@ -17,16 +20,31 @@ from nucleus.training.checkpoint import CheckpointManager, TrainingState, restor
 from nucleus.training.data import ForecastDataSettings, forecast_dataloader, read_split
 from nucleus.training.logger import MetricLogger
 from nucleus.training.loop import LoopSettings, TrainingModule, fit
-from nucleus.training.optim import build_optimization
+from nucleus.training.optim import Optimization, build_optimization
 from nucleus.utils.parameter_count import count_model_parameters
 
 # a smoke run checks the training loop end to end in seconds and writes nothing
 SMOKE_STEPS = 3
 
 
-def run_training(cfg: DictConfig, build_training_module: Callable[[nn.Module, DictConfig], TrainingModule]) -> TrainingState:
-    """Trains the model named by cfg.model_cfg with the training module that
-    build_training_module wraps it in, as a model's train script configures."""
+@dataclass
+class TrainingSetup:
+    """Everything a training run is built from, before it trains."""
+    device: torch.device
+    model: nn.Module
+    module: TrainingModule
+    train_batches: DataLoader
+    val_batches: DataLoader
+    optimization: Optimization
+    loop_settings: LoopSettings
+
+
+TrainingModuleBuilder = Callable[[nn.Module, DictConfig], TrainingModule]
+
+
+def prepare_training(cfg: DictConfig, build_training_module: TrainingModuleBuilder) -> TrainingSetup:
+    """The model named by cfg.model_cfg, wrapped in the training module that
+    build_training_module makes, with its data loaders and optimizer."""
     seed_everything(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(cfg, device)
@@ -42,6 +60,14 @@ def run_training(cfg: DictConfig, build_training_module: Callable[[nn.Module, Di
     optimization = build_optimization(
         model, _container(cfg.optim_cfg), _container(cfg.scheduler_cfg), loop_settings.max_steps
     )
+    return TrainingSetup(device, model, module, train_batches, val_batches, optimization, loop_settings)
+
+
+def run_training(cfg: DictConfig, build_training_module: TrainingModuleBuilder) -> TrainingState:
+    """Trains the model named by cfg.model_cfg with the training module that
+    build_training_module wraps it in, as a model's train script configures."""
+    setup = prepare_training(cfg, build_training_module)
+    device, model, optimization = setup.device, setup.model, setup.optimization
     state = restore_training(cfg.checkpoint_path, model, optimization, device) if cfg.checkpoint_path else None
 
     logger, checkpoints = MetricLogger(), None
@@ -51,7 +77,10 @@ def run_training(cfg: DictConfig, build_training_module: Callable[[nn.Module, Di
         checkpoints = CheckpointManager(run_directory / "checkpoints", model, optimization, _container(cfg))
     try:
         with neighborhood_attention_for(device):
-            state = fit(module, train_batches, val_batches, optimization, loop_settings, logger, device, checkpoints, state)
+            state = fit(
+                setup.module, setup.train_batches, setup.val_batches, optimization, setup.loop_settings,
+                logger, device, checkpoints, state,
+            )
     except BaseException:
         logger.finish(failed=True)
         raise
