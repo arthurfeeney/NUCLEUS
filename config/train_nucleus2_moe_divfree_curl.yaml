@@ -46,6 +46,11 @@ training:
   # with probability push_forward_probability, train on up to unroll_steps - 1
   # windows predicted by the model itself
   push_forward_probability: 0.0
+  # true adds the target divergence as a loss on the divergence source; false leaves
+  # it to learn only through the velocity loss
+  supervise_div_source: false
+  # true scores the divergence-free parts of the face velocities, not the full velocities
+  solenoidal_velocity_target: true
 
 defaults:
   - _self_

@@ -7,10 +7,12 @@ from omegaconf import OmegaConf
 from nucleus.models import get_model
 from nucleus.models.nucleus2_moe_divfree_curl import Nucleus2MoEDivFreeCurl
 from nucleus.testing.flashx import flashx_normalizer, random_forecast_batch
+from nucleus.training.modules.common import normalize_forecast_batch
 from nucleus.training.modules.nucleus2_moe_divfree_curl import (
     Nucleus2MoEDivFreeCurlTraining,
     Nucleus2MoEDivFreeCurlTrainingSettings,
 )
+from nucleus.training.modules.nucleus2_moe_divfree_projection import solenoidal_faces
 
 FIELD_NAMES = Nucleus2MoEDivFreeCurl.field_names
 
@@ -35,8 +37,20 @@ def test_training_step_gives_a_finite_loss_that_backpropagates():
     assert torch.isfinite(output.loss)
     output.loss.backward()
     assert all(torch.isfinite(value) for value in training.gradient_metrics().values())
-    for name in (*FIELD_NAMES, "div_source"):
+    for name in ("dfun", "temperature", "solenoidal_velfacex", "solenoidal_velfacey"):
         assert f"train/mae_{name}" in output.metrics
+    for name in ("velfacex", "velfacey", "div_source"):
+        assert f"train/mae_{name}" not in output.metrics
+
+
+def test_the_solenoidal_target_is_the_curl_of_the_stream_function():
+    training = _training()
+    batch = normalize_forecast_batch(training.model.normalizer, _forecast_batch())
+    with torch.no_grad():
+        output = training.model(batch.input)
+    velx_faces, vely_faces = solenoidal_faces(output.prediction, output.grid)
+    torch.testing.assert_close(velx_faces, output.solenoidal_velx_faces, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(vely_faces, output.solenoidal_vely_faces, atol=1e-4, rtol=1e-4)
 
 
 def test_validation_step_scores_the_first_target_window():

@@ -13,6 +13,7 @@ from boiling_data.tasks.forecast.flashx_batch import FlashXForecastBatch
 
 from nucleus.models.nucleus2_moe_divfree_projection import Nucleus2MoEDivFreeProjection, Nucleus2MoEDivFreeProjectionOutput
 from nucleus.physics.coordinates import CellCenteredGrid
+from nucleus.physics.div_projection import div_projection
 from nucleus.physics.poisson import divergence_centers_from_faces
 from nucleus.training.loop import Metrics, StepOutput
 from nucleus.training.modules.common import normalize_forecast_batch, per_field_mae, pooled_l1_loss
@@ -31,6 +32,11 @@ class Nucleus2MoEDivFreeProjectionTrainingSettings:
     # unrolls past the first target window; the dataset's unroll_steps minus one
     max_unrolls: int = 0
     push_forward_probability: float = 0.0
+    # without it, the divergence source learns only from the velocity loss downstream of it
+    supervise_div_source: bool = False
+    # score the divergence-free parts of the face velocities rather than the full
+    # velocities, so the loss leaves the dilatational part to the divergence source
+    solenoidal_velocity_target: bool = True
 
 
 def target_div_source(target: FlashXBatch, grid: CellCenteredGrid) -> torch.Tensor:
@@ -40,12 +46,22 @@ def target_div_source(target: FlashXBatch, grid: CellCenteredGrid) -> torch.Tens
     return divergence_centers_from_faces(target.fields["velfacex"], target.fields["velfacey"], grid.dx, grid.dy)
 
 
+def solenoidal_faces(batch: FlashXBatch, grid: CellCenteredGrid) -> Tuple[torch.Tensor, torch.Tensor]:
+    """The (B, T, H, W + 1) and (B, T, H + 1, W) divergence-free part of the batch's face
+    velocity: the velocity minus grad(phi), where laplacian(phi) is its divergence.
+    The curl model's dilatational velocity is a grad(phi) with the same boundary
+    conditions, so this removes it and leaves the curl of the stream function."""
+    return div_projection(batch.fields["velfacex"], batch.fields["velfacey"], grid.dx, grid.dy)
+
+
 class Nucleus2MoEDivFreeProjectionTraining(nn.Module):
     """Trains a Nucleus2MoEDivFreeProjection on raw FlashXForecastBatches: flips the raw batch,
     normalizes it, adds noise to the normalized input, optionally pushes the input
-    forward through the model, then takes the L1 loss over every predicted field and
-    the divergence source, and the router loss. The predicted face velocities are
-    the network's own unless the model's config sets use_div_projection."""
+    forward through the model, then takes the L1 loss over the sdf, the temperature,
+    the face velocities (only their divergence-free parts with solenoidal_velocity_target)
+    and, with supervise_div_source, the divergence source, and the router loss. The
+    predicted face velocities are the network's own unless the model's config sets
+    use_div_projection."""
 
     def __init__(self, model: Nucleus2MoEDivFreeProjection, settings: Nucleus2MoEDivFreeProjectionTrainingSettings):
         super().__init__()
@@ -103,5 +119,12 @@ class Nucleus2MoEDivFreeProjectionTraining(nn.Module):
         prediction = output.prediction.tail_time_window(target.num_timesteps)
         window = slice(-target.num_timesteps, None)
         pairs = {name: (prediction.fields[name], target.fields[name]) for name in self.model.field_names}
-        pairs["div_source"] = (output.div_source[:, window], target_div_source(target, output.grid))
+        if self.settings.solenoidal_velocity_target:
+            del pairs["velfacex"], pairs["velfacey"]
+            predicted_velx, predicted_vely = solenoidal_faces(prediction, output.grid)
+            target_velx, target_vely = solenoidal_faces(target, output.grid)
+            pairs["solenoidal_velfacex"] = (predicted_velx, target_velx)
+            pairs["solenoidal_velfacey"] = (predicted_vely, target_vely)
+        if self.settings.supervise_div_source:
+            pairs["div_source"] = (output.div_source[:, window], target_div_source(target, output.grid))
         return pairs
