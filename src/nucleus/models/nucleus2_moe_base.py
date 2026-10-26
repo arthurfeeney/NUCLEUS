@@ -1,6 +1,6 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import List, Literal, Tuple, Type, TypeVar
+from typing import List, Literal, Optional, Tuple, Type, TypeVar
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,7 @@ from boiling_data.flashx.normalizer import NormalizerWrapper
 from nucleus.layers.attention import NeighborhoodAttention
 from nucleus.layers.moe.topk_moe import TopkMoE, TopkMoEOutput, TopkRouterWithBias
 from nucleus.layers.droppath import DropPath
+from nucleus.layers.mlp import DenseMLP
 from nucleus.layers.cast import CastRMSNorm
 from nucleus.layers import (
     AdaptiveEmbed,
@@ -64,6 +65,9 @@ class Nucleus2MoEBaseConfig:
     activation_dtype: NUCLEUS_DTYPE = "float32"
     attention_dtype: NUCLEUS_DTYPE = "bfloat16"
     moe_dtype: NUCLEUS_DTYPE = "bfloat16"
+    # "dense" replaces each block's MoE with a DenseMLP of moe_intermediate_dim hidden
+    # units, for data too small to train experts on; num_experts and topk are then unused
+    mlp_type: Literal["moe", "dense"] = "moe"
 
 
 ConfigType = TypeVar("ConfigType", bound=Nucleus2MoEBaseConfig)
@@ -141,23 +145,11 @@ class TransformerMoEBlock(nn.Module):
             config.embed_dim, conditioning_dim=config.embed_dim, dtype=self.moe_dtype
         )
 
-        self.router = TopkRouterWithBias(
-            config.num_experts,
-            config.embed_dim,
-            config.topk,
-            bias_update_rate=0.001,
-            softmax_first=False
-        )
-
         self.attention = NeighborhoodAttention(embed_dim=config.embed_dim, num_heads=config.num_heads)
-
-        self.mlp = TopkMoE(
-            num_experts=config.num_experts,
-            hidden_dim=config.embed_dim,
-            intermediate_dim=config.moe_intermediate_dim,
-            topk=config.topk,
-            router=self.router
-        )
+        self.mlp = _block_mlp(config)
+        if isinstance(self.mlp, TopkMoE):
+            # checkpoints hold the router under both blocks.N.router and blocks.N.mlp.router
+            self.router = self.mlp.router
 
     def _attention(self, x: torch.Tensor, freqs: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
         with record_function("attention"):
@@ -168,12 +160,18 @@ class TransformerMoEBlock(nn.Module):
             x = x + h.to(self.activation_dtype)
         return x
 
-    def _mlp(self, x: torch.Tensor, conditioning: torch.Tensor):
+    def _mlp(self, x: torch.Tensor, conditioning: torch.Tensor) -> Tuple[torch.Tensor, Optional[TopkMoEOutput]]:
+        """The block's MLP residual, and its MoE output; None for a DenseMLP."""
         with record_function("moe"):
             h = x.to(self.moe_dtype)
             h = self.mlp_norm(h, conditioning)
-            moe_output: TopkMoEOutput = self.mlp(h)
-            h = self.drop_path(moe_output.out)
+            moe_output = None
+            if isinstance(self.mlp, TopkMoE):
+                moe_output = self.mlp(h)
+                h = moe_output.out
+            else:
+                h = self.mlp(h)
+            h = self.drop_path(h)
             x = x + h.to(self.activation_dtype)
         return x, moe_output
 
@@ -181,6 +179,27 @@ class TransformerMoEBlock(nn.Module):
         x = self._attention(x, freqs, conditioning)
         x, moe_output = self._mlp(x, conditioning)
         return x, moe_output
+
+
+def _block_mlp(config: Nucleus2MoEBaseConfig) -> nn.Module:
+    if config.mlp_type == "dense":
+        return DenseMLP(hidden_dim=config.embed_dim, intermediate_dim=config.moe_intermediate_dim)
+    if config.mlp_type != "moe":
+        raise ValueError(f"unknown mlp_type {config.mlp_type!r}; the types are 'moe' and 'dense'")
+    router = TopkRouterWithBias(
+        config.num_experts,
+        config.embed_dim,
+        config.topk,
+        bias_update_rate=0.001,
+        softmax_first=False
+    )
+    return TopkMoE(
+        num_experts=config.num_experts,
+        hidden_dim=config.embed_dim,
+        intermediate_dim=config.moe_intermediate_dim,
+        topk=config.topk,
+        router=router,
+    )
 
 
 def _patch_embed(config: Nucleus2MoEBaseConfig, in_channels: int) -> nn.Module:
@@ -272,7 +291,8 @@ class Nucleus2MoEBase(nn.Module):
     def process(self, cells: torch.Tensor, sim_params: torch.Tensor) -> Tuple[torch.Tensor, List[TopkMoEOutput]]:
         """cells: ``(B, T, H, W, in_channels)`` float32, sim_params: ``(B, num_sim_params)``.
         Returns the normalized patch tokens, ``(B, T, patches_y, patches_x, embed_dim)``
-        in debed_dtype, for an output head, then the MoE output of every block."""
+        in debed_dtype, for an output head, then the MoE output of every block, none
+        with a dense mlp_type."""
         assert cells.dtype == torch.float32, f"expected float32, got {cells.dtype}"
         assert sim_params.dtype == torch.float32, f"expected float32, got {sim_params.dtype}"
 
@@ -293,7 +313,8 @@ class Nucleus2MoEBase(nn.Module):
         for idx, blk in enumerate(self.blocks):
             with record_function(f"block_{idx}"):
                 x, moe_output = blk(x, rotary_freqs, conditioning)
-                moe_outputs.append(moe_output)
+                if moe_output is not None:
+                    moe_outputs.append(moe_output)
 
         with record_function("out_norm"):
             x = self.out_norm(x.to(self.debed_dtype) + embed.to(self.debed_dtype))
@@ -302,7 +323,7 @@ class Nucleus2MoEBase(nn.Module):
     def step(self, cells: torch.Tensor, sim_params: torch.Tensor) -> Tuple[torch.Tensor, List[TopkMoEOutput]]:
         """cells: ``(B, T, H, W, in_channels)`` float32, sim_params: ``(B, num_sim_params)``.
         Returns the output head's prediction, ``(B, T, H, W, out_channels)`` float32,
-        then the MoE output of every block."""
+        then the MoE output of every block, none with a dense mlp_type."""
         _, _, height, width, _ = cells.shape
         tokens, moe_outputs = self.process(cells, sim_params)
         with record_function("debed"):

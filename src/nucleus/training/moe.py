@@ -8,7 +8,9 @@ from nucleus.layers.moe.topk_moe import TopkMoEOutput, TopkRouterWithBias
 
 def router_loss(moe_outputs: List[TopkMoEOutput], load_balance_weight: float, z_loss_weight: float) -> torch.Tensor:
     """The auxiliary loss of routers trained by a loss; zero for routers balanced
-    by a bias, which update_router_bias balances instead."""
+    by a bias, which update_router_bias balances instead, and for a model without MoE."""
+    if not moe_outputs:
+        return torch.zeros(())
     if moe_outputs[0].router_output.router_type() != "loss":
         return torch.zeros((), device=moe_outputs[0].router_output.z_loss.device)
     load_balance = sum(output.router_output.load_balance_loss for output in moe_outputs)
@@ -17,7 +19,7 @@ def router_loss(moe_outputs: List[TopkMoEOutput], load_balance_weight: float, z_
 
 
 def update_router_bias(model: nn.Module, moe_outputs: List[TopkMoEOutput]) -> None:
-    if moe_outputs[0].router_output.router_type() != "bias":
+    if not moe_outputs or moe_outputs[0].router_output.router_type() != "bias":
         return
     routers = [module for module in model.modules() if isinstance(module, TopkRouterWithBias)]
     for router, output in zip(routers, moe_outputs, strict=True):
