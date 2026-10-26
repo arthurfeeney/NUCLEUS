@@ -68,6 +68,8 @@ class Nucleus2MoEBaseConfig:
     # "dense" replaces each block's MoE with a DenseMLP of moe_intermediate_dim hidden
     # units, for data too small to train experts on; num_experts and topk are then unused
     mlp_type: Literal["moe", "dense"] = "moe"
+    # the width in patches of the square neighborhood each patch attends to, across all frames
+    natten_kernel_size: int = 3
 
 
 ConfigType = TypeVar("ConfigType", bound=Nucleus2MoEBaseConfig)
@@ -145,7 +147,9 @@ class TransformerMoEBlock(nn.Module):
             config.embed_dim, conditioning_dim=config.embed_dim, dtype=self.moe_dtype
         )
 
-        self.attention = NeighborhoodAttention(embed_dim=config.embed_dim, num_heads=config.num_heads)
+        self.attention = NeighborhoodAttention(
+            embed_dim=config.embed_dim, num_heads=config.num_heads, kernel_size=config.natten_kernel_size
+        )
         self.mlp = _block_mlp(config)
         if isinstance(self.mlp, TopkMoE):
             # checkpoints hold the router under both blocks.N.router and blocks.N.mlp.router

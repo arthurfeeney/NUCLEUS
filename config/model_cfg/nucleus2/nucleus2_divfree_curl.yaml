@@ -8,6 +8,7 @@ params:
   num_experts: 6
   topk: 2
   mlp_type: moe
+  natten_kernel_size: 5
   patching: "Linear"
   activation_dtype: "bfloat16"
   # hold the temperature at saturation on the interface and at the heater temperature
