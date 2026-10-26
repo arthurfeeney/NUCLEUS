@@ -16,7 +16,7 @@ from nucleus.physics.coordinates import CellCenteredGrid
 from nucleus.physics.div_projection import div_projection
 from nucleus.physics.poisson import divergence_centers_from_faces
 from nucleus.training.loop import Metrics, StepOutput
-from nucleus.training.modules.common import normalize_forecast_batch, per_field_mae, pooled_l1_loss
+from nucleus.training.modules.common import interface_weights, normalize_forecast_batch, per_field_mae, pooled_l1_loss
 from nucleus.training.moe import moe_metrics, router_loss, update_router_bias
 from nucleus.training.push_forward import push_forward, sample_num_unrolls
 
@@ -32,6 +32,10 @@ class Nucleus2MoEDivFreeProjectionTrainingSettings:
     # unrolls past the first target window; the dataset's unroll_steps minus one
     max_unrolls: int = 0
     push_forward_probability: float = 0.0
+    # the training loss weight of the cells within interface_loss_band_cells of the
+    # target's interface, against 1 for the rest; 1 weighs every cell alike
+    interface_loss_weight: float = 1.0
+    interface_loss_band_cells: float = 3.0
     # without it, the divergence source learns only from the velocity loss downstream of it
     supervise_div_source: bool = False
     # score the divergence-free parts of the face velocities rather than the full
@@ -59,9 +63,9 @@ class Nucleus2MoEDivFreeProjectionTraining(nn.Module):
     normalizes it, adds noise to the normalized input, optionally pushes the input
     forward through the model, then takes the L1 loss over the sdf, the temperature,
     the face velocities (only their divergence-free parts with solenoidal_velocity_target)
-    and, with supervise_div_source, the divergence source, and the router loss. The
-    predicted face velocities are the network's own unless the model's config sets
-    use_div_projection."""
+    and, with supervise_div_source, the divergence source, weighted toward the
+    interface by interface_loss_weight, and the router loss. The predicted face
+    velocities are the network's own unless the model's config sets use_div_projection."""
 
     def __init__(self, model: Nucleus2MoEDivFreeProjection, settings: Nucleus2MoEDivFreeProjectionTrainingSettings):
         super().__init__()
@@ -80,7 +84,13 @@ class Nucleus2MoEDivFreeProjectionTraining(nn.Module):
         batch = push_forward(self._next_window, batch, num_unrolls, self.settings.target_timesteps)
         output = self.model(batch.input)
         pairs = self._prediction_target_pairs(output, batch.target)
-        data_loss = pooled_l1_loss(pairs)
+        weights = interface_weights(
+            self.model.normalizer,
+            batch.target,
+            self.settings.interface_loss_weight,
+            self.settings.interface_loss_band_cells,
+        )
+        data_loss = pooled_l1_loss(pairs, weights)
         loss = data_loss + router_loss(
             output.moe_outputs, self.settings.load_balance_loss_weight, self.settings.z_loss_weight
         )

@@ -14,7 +14,7 @@ from nucleus.models.nucleus2_moe import Nucleus2MoE
 from nucleus.training.field_dropout import FieldDropout
 from nucleus.training.loop import Metrics, StepOutput
 from nucleus.training.metrics import prediction_metrics
-from nucleus.training.modules.common import normalize_forecast_batch
+from nucleus.training.modules.common import interface_weights, normalize_forecast_batch, weighted_l1_loss
 from nucleus.training.moe import moe_metrics, router_loss, update_router_bias
 from nucleus.training.push_forward import push_forward, sample_num_unrolls
 
@@ -31,13 +31,18 @@ class Nucleus2MoETrainingSettings:
     # unrolls past the first target window; the dataset's unroll_steps minus one
     max_unrolls: int = 0
     push_forward_probability: float = 0.0
+    # the training loss weight of the cells within interface_loss_band_cells of the
+    # target's interface, against 1 for the rest; 1 weighs every cell alike
+    interface_loss_weight: float = 1.0
+    interface_loss_band_cells: float = 3.0
 
 
 class Nucleus2MoETraining(nn.Module):
     """Trains a Nucleus2MoE on raw FlashXForecastBatches: flips the raw batch,
     normalizes it with the model's normalizer, drops fields and adds noise to the
     normalized input, optionally pushes the input forward through the model, then
-    takes the L1 loss of the next target window plus the router loss."""
+    takes the L1 loss of the next target window, weighted toward the interface by
+    interface_loss_weight, plus the router loss."""
 
     def __init__(self, model: Nucleus2MoE, settings: Nucleus2MoETrainingSettings):
         super().__init__()
@@ -57,7 +62,15 @@ class Nucleus2MoETraining(nn.Module):
         batch = push_forward(self._next_window, batch, num_unrolls, self.settings.target_timesteps)
         output = self.model(batch.input)
         prediction, target = self._stacked(output.prediction, batch.target)
-        data_loss = torch.nn.functional.l1_loss(prediction, target)
+        weights = interface_weights(
+            self.model.normalizer,
+            batch.target,
+            self.settings.interface_loss_weight,
+            self.settings.interface_loss_band_cells,
+        )
+        data_loss = torch.nn.functional.l1_loss(prediction, target) if weights is None else weighted_l1_loss(
+            prediction, target, weights
+        )
         loss = data_loss + router_loss(
             output.moe_outputs, self.settings.load_balance_loss_weight, self.settings.z_loss_weight
         )

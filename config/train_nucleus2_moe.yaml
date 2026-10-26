@@ -44,6 +44,8 @@ training:
   # with probability push_forward_probability, train on up to unroll_steps - 1
   # windows predicted by the model itself
   push_forward_probability: 0.0
+  interface_loss_weight: 1.0
+  interface_loss_band_cells: 3.0
 
 defaults:
   - _self_

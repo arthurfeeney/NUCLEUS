@@ -14,6 +14,7 @@ from nucleus.training.field_dropout import FieldDropout
 from nucleus.training.loop import Metrics, StepOutput
 from nucleus.training.modules.common import (
     PredictionTargetPairs,
+    interface_weights,
     normalize_forecast_batch,
     per_field_mae,
     pooled_l1_loss,
@@ -34,14 +35,18 @@ class Nucleus2MoEStaggeredTrainingSettings:
     # unrolls past the first target window; the dataset's unroll_steps minus one
     max_unrolls: int = 0
     push_forward_probability: float = 0.0
+    # the training loss weight of the cells within interface_loss_band_cells of the
+    # target's interface, against 1 for the rest; 1 weighs every cell alike
+    interface_loss_weight: float = 1.0
+    interface_loss_band_cells: float = 3.0
 
 
 class Nucleus2MoEStaggeredTraining(nn.Module):
     """Trains a Nucleus2MoEStaggered as Nucleus2MoETraining trains a Nucleus2MoE:
     flips the raw batch, normalizes it, drops fields and adds noise to the
     normalized input, optionally pushes the input forward through the model, then
-    takes the L1 loss over every predicted field on its own grid, plus the router
-    loss."""
+    takes the L1 loss over every predicted field on its own grid, weighted toward
+    the interface by interface_loss_weight, plus the router loss."""
 
     def __init__(self, model: Nucleus2MoEStaggered, settings: Nucleus2MoEStaggeredTrainingSettings):
         super().__init__()
@@ -61,7 +66,13 @@ class Nucleus2MoEStaggeredTraining(nn.Module):
         batch = push_forward(self._next_window, batch, num_unrolls, self.settings.target_timesteps)
         output = self.model(batch.input)
         pairs = self._prediction_target_pairs(output.prediction, batch.target)
-        data_loss = pooled_l1_loss(pairs)
+        weights = interface_weights(
+            self.model.normalizer,
+            batch.target,
+            self.settings.interface_loss_weight,
+            self.settings.interface_loss_band_cells,
+        )
+        data_loss = pooled_l1_loss(pairs, weights)
         loss = data_loss + router_loss(
             output.moe_outputs, self.settings.load_balance_loss_weight, self.settings.z_loss_weight
         )
