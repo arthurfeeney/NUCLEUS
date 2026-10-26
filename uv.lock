@@ -53,7 +53,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d
 [[package]]
 name = "boiling-data"
 version = "0.1.0"
-source = { git = "https://github.com/therml-ai/boiling-data?branch=main#ab03871e596bd8a6ed7058a921cbe52056568a83" }
+source = { git = "https://github.com/therml-ai/boiling-data?branch=main#ca144197ed5a3b09aca08f67de8d8976b50505ad" }
 dependencies = [
     { name = "h5py" },
     { name = "numpy" },
