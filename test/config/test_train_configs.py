@@ -9,10 +9,17 @@ TRAIN_CONFIGS = ["train_nucleus2_moe", "train_nucleus2_moe_divfree_projection", 
 def test_paths_and_directories_must_be_given(config_name):
     with initialize(version_base=None, config_path="../../config"):
         cfg = compose(config_name=config_name)
-    for key in ("split_dir", "log_dir"):
+    for key in ("split_dir", "checkpoint_dir", "log_dir"):
         assert OmegaConf.is_missing(cfg, key)
     assert cfg.checkpoint_path is None
     assert cfg.smoke is False
+
+
+@pytest.mark.parametrize("config_name", TRAIN_CONFIGS)
+def test_hydra_writes_its_files_under_the_log_directory(config_name):
+    with initialize(version_base=None, config_path="../../config"):
+        cfg = compose(config_name=config_name, overrides=["log_dir=/scratch/logs"], return_hydra_config=True)
+    assert cfg.hydra.run.dir.startswith("/scratch/logs/hydra/")
 
 
 @pytest.mark.parametrize("config_name", TRAIN_CONFIGS)

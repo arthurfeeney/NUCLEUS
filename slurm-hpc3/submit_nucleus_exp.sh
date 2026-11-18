@@ -24,6 +24,22 @@ uv pip install -e .
 # statistics.json that its scripts/bubbleml_statistics.py wrote for the train cases
 SPLIT_DIR=  # TODO: the split converted data
 
+# Logs and printed output go to node-local $TMPDIR while training, keeping them off /pub;
+# checkpoints go to /pub. When the job ends, even early, each run's output.log is
+# copied next to its checkpoints, since $TMPDIR is deleted with the job.
+CHECKPOINT_DIR=/pub/afeeney/nucleus_logs
+LOG_DIR=$TMPDIR/nucleus_logs
+copy_output_logs() {
+    for log in $LOG_DIR/*/output.log; do
+        if [ -f "$log" ]; then
+            cp "$log" "$CHECKPOINT_DIR/$(basename "$(dirname "$log")")/"
+        fi
+    done
+}
+trap copy_output_logs EXIT
+# Slurm sends TERM at the time limit; exit so the EXIT trap still runs
+trap 'exit 143' TERM
+
 python scripts/train/train_nucleus2_moe_divfree_projection.py \
     split_dir=$SPLIT_DIR \
     model_cfg.params.processor_blocks=8 \
@@ -41,4 +57,5 @@ python scripts/train/train_nucleus2_moe_divfree_projection.py \
     scheduler_cfg=trapezoidal \
     scheduler_cfg.params.warmup=2000 \
     scheduler_cfg.params.cooldown=20000 \
-    log_dir=/pub/afeeney/nucleus_logs
+    checkpoint_dir=$CHECKPOINT_DIR \
+    log_dir=$LOG_DIR

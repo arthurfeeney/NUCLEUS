@@ -88,9 +88,15 @@ Settings can be changed by modifying the config files and can overriden on the c
 ```bash
 python scripts/train/train_nucleus2_moe.py \
     split_dir=/path/to/split \
+    checkpoint_dir=/path/to/checkpoints \
     log_dir=/path/to/logs \
     model_cfg.params.patch_size=16
 ```
+
+Training runs write checkpoints under `checkpoint_dir`, and everything else under `log_dir`: the process's stdout and
+stderr (`output.log`, which every `print` goes to), Hydra's files and wandb's local files. Both get the run's
+config. On a cluster, setting `log_dir` to node-local scratch such as `$TMPDIR` keeps these frequent writes to off-node
+shared storage. Submission scripts can copy the logs to off-node storage when the training script completes.
 
 To check the data, model and training loop in a few steps, without wandb or checkpoints, run the smoke test on a
 split; any further arguments override the model's training config:

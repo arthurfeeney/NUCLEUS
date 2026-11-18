@@ -21,10 +21,13 @@ from nucleus.training.data import ForecastDataSettings, forecast_dataloader, rea
 from nucleus.training.logger import MetricLogger
 from nucleus.training.loop import LoopSettings, TrainingModule, fit
 from nucleus.training.optim import Optimization, build_optimization
+from nucleus.training.output import redirect_output
 from nucleus.utils.parameter_count import count_model_parameters
 
 # a smoke run checks the training loop end to end in seconds and writes nothing
 SMOKE_STEPS = 3
+# the training process's stdout and stderr, in the run's log directory
+OUTPUT_FILE = "output.log"
 
 
 @dataclass
@@ -66,15 +69,18 @@ def prepare_training(cfg: DictConfig, build_training_module: TrainingModuleBuild
 def run_training(cfg: DictConfig, build_training_module: TrainingModuleBuilder) -> TrainingState:
     """Trains the model named by cfg.model_cfg with the training module that
     build_training_module wraps it in, as a model's train script configures."""
+    if not cfg.smoke:
+        log_directory, checkpoint_directory = make_run_directories(cfg)
+        # before setup, so the output of building the model and data goes there too
+        redirect_output(log_directory / OUTPUT_FILE)
     setup = prepare_training(cfg, build_training_module)
     device, model, optimization = setup.device, setup.model, setup.optimization
     state = restore_training(cfg.checkpoint_path, model, optimization, device) if cfg.checkpoint_path else None
 
     logger, checkpoints = MetricLogger(), None
     if not cfg.smoke:
-        run_directory = make_run_directory(cfg)
-        logger = _wandb_logger(cfg, run_directory)
-        checkpoints = CheckpointManager(run_directory / "checkpoints", model, optimization, _container(cfg))
+        logger = _wandb_logger(cfg, log_directory)
+        checkpoints = CheckpointManager(checkpoint_directory / "checkpoints", model, optimization, _container(cfg))
     try:
         with neighborhood_attention_for(device):
             state = fit(
@@ -101,14 +107,19 @@ def build_model(cfg: DictConfig, device: torch.device) -> nn.Module:
     return model
 
 
-def make_run_directory(cfg: DictConfig) -> Path:
+def make_run_directories(cfg: DictConfig) -> tuple[Path, Path]:
+    """The run's directories under cfg.log_dir and cfg.checkpoint_dir, sharing one name,
+    each with the run's config: the log directory can be node-local scratch that goes
+    when the job ends."""
     parts = [cfg.model_cfg.name, date.today().isoformat()]
     if os.getenv("SLURM_JOB_ID") is not None:
         parts.append(os.environ["SLURM_JOB_ID"])
-    run_directory = Path(cfg.log_dir) / "_".join(parts)
-    run_directory.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, run_directory / "config.yaml")
-    return run_directory
+    run_name = "_".join(parts)
+    directories = (Path(cfg.log_dir) / run_name, Path(cfg.checkpoint_dir) / run_name)
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+        OmegaConf.save(cfg, directory / "config.yaml")
+    return directories
 
 
 def seed_everything(seed: int) -> None:

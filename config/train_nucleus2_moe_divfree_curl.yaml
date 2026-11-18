@@ -1,7 +1,12 @@
 # a directory made by boiling-data's scripts/split_dataset.py: train/, val/ and test/
 # directories and the split.json listing their cases. Training reads train and val.
 split_dir: ???
-# directory to write the run's config, checkpoints and wandb files
+# directory to write the run's checkpoints and a copy of its config, which have to
+# outlive the job
+checkpoint_dir: ???
+# directory to write the run's logs: its stdout and stderr (output.log), Hydra's files,
+# wandb's local files and its config. Node-local scratch such as $TMPDIR keeps these
+# frequent writes off shared storage; they go when the job ends.
 log_dir: ???
 # resume training from this checkpoint
 checkpoint_path:
@@ -60,3 +65,8 @@ defaults:
   - model_cfg: nucleus2/nucleus2_divfree_curl
   - optim_cfg: adamw
   - scheduler_cfg: cosine_warmup
+
+hydra:
+  run:
+    # Hydra writes its files here rather than to outputs/ in the working directory
+    dir: ${log_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
